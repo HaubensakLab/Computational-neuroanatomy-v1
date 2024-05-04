@@ -1,5 +1,8 @@
 # Computational-neuroanatomy-v1
 The code developed for building the computational neuroanatomy atlas and biclusters as described in Kaczanowska et al, "Molecular archaeology of human cognitive traits"
+![fx1_lrg](https://github.com/HaubensakLab/Computational-neuroanatomy-v1/assets/168899381/5d0cef49-e35d-44c8-ab0d-013296eede29)
+Source: [DOI](https://doi.org/10.1016/j.celrep.2022.111287)
+
 
 Copyright (C) 2022 VRVis.
 All rights reserved.
