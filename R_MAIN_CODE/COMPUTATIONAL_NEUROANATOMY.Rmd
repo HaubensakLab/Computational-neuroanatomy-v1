@@ -1,0 +1,1958 @@
+---
+title: "R Notebook Computational Neuroanatomy"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+```{r Licence}
+# Copyright (C) 2022 VRVis.
+# All rights reserved.
+# Contact: VRVis Forschungs-GmbH (office@vrvis.at)
+# 
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+# 3. All advertising materials mentioning features or use of this software
+#    must display the following acknowledgement:
+#    This product includes software developed by the VRVis Forschungs-GmbH.
+# 4. Neither the name of the VRVis Forschungs-GmbH nor the
+#    names of its contributors may be used to endorse or promote products
+#    derived from this software without specific prior written permission.
+#
+```
+
+```{r setup}
+#setup
+
+workingDir<-"C:/Users/ganglberger/Documents/Evolution/evo_paper_v3_olga_data/R_MAIN_CODE"
+knitr::opts_knit$set(root.dir = normalizePath(workingDir)) 
+
+setwd(workingDir)
+
+set.seed(42)
+
+```
+
+```{r load libraries, warning=FALSE}
+#load libraries
+
+#Runs under R 4.0.3
+options(java.parameters = "- Xmx2024m")
+library("xlsx")
+library("corrplot")
+library("R.matlab")
+library("rjson")
+library("gplots")
+library("png")
+library("e1071")
+library("rsvg")
+library("XML")
+library("igraph")
+library('knitr')
+library("biomaRt")
+library('org.Hs.eg.db')
+
+```
+
+```{r set parameters, echo=FALSE, message=FALSE, warning=FALSE}
+#set parameters
+
+prefix<-"NGT_SPLIT_TREE_9000_NAto0_"
+dataFile<-"../storage/dnds_data_table/results-split-table-from-9-trees+tree_test_alt-omega.csv"
+colsToUse<-c(1:15,18,19,16:17,20:21)+4 #Columns of the data file that needs to be used
+colsToUseNames<-c("MOUSE","OTOGA","CALJA","MACMU","NOMLE","GORGO","PANTR","DENISOVAN","NEANDERTHAL","HUMAN","MO_CMNGPDNH","MOC_MNGPDNH","MOCM_NGPDNH","MOCMN_GPDNH","MOCMNG_HNDP","MOCMNGP_HND","MOCMNGPD_HN","MOCMNP_HNDG","MOCMNDHN_PG","MOCMNGPH_ND","MOCMNGPN_HD")
+
+functionalMapsHuman<-paste0("../storage/results_functionalmaps_human/",prefix,"evolution_sets_human_linear_DNDS_weighted") #Folder for predicted functional maps for human
+
+# Use these for different subtrees (all, C3,E2 or C)
+transistionsToUseForFunctionalMap<-1:length(colsToUse)
+transistionsToUseForFunctionalMapPostfix<-""
+  
+# transistionsToUseForFunctionalMap<- c(10, 16, 17, 20, 21)
+# transistionsToUseForFunctionalMapPostfix<-"_C3" #mouse to human late no gorgo
+  
+# transistionsToUseForFunctionalMap<- c(7, 8, 9, 10, 15, 16, 17, 18, 19, 20, 21)
+# transistionsToUseForFunctionalMapPostfix<-"_E2" #E2 hominids speciation with ancestors no gorgo
+  
+# this was used in the paper. comment this out if you want to use all
+transistionsToUseForFunctionalMap<- c(11:17,10)
+transistionsToUseForFunctionalMapPostfix<-"_C" #mouse to human
+
+
+
+dir.create("../storage/results_functionalmaps_human")
+dir.create("../storage/csvs")
+dir.create(paste0("../storage/",prefix,"dnds_distribution_plots"))
+dir.create(paste0("../storage/",prefix,"branch_to_network_and_tasks_correlation_dndsweighted"))
+dir.create(paste0("../storage/",prefix,"branch_to_network_and_tasks_correlation_dndsweighted/additional_plots"))
+dir.create(paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted"))
+dir.create(paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted_full"))
+
+
+
+
+```
+
+```{r Read DNDS-ratio data}
+#Read DNDS-ratio data
+
+dnds<-read.csv2(dataFile,stringsAsFactors=FALSE,dec = ".",sep=",",header=length(colsToUseNames)==0)
+# values below zero mean:
+#-1 - unstable dn/ds in 5 runs
+#-2 - short edge, unstable
+#-3 - 0 values, dN=0
+#-4 - 999 values, dS=0
+#-5 identical sequences (the majority between HUMAN and NEANDERTHAL)
+
+if(length(colsToUseNames)>0){
+  colnames(dnds)[colsToUse]<-colsToUseNames
+}
+
+humanEntrez<-dnds[,2]
+
+print(paste0("Dimension of data: ",dim(dnds)[1]," x ",dim(dnds)[2]))
+
+head(dnds)
+```
+
+```{r Load ontology}
+#Read ontology (hierarchy of regions + a color palette for the output of MRI style plots)
+
+documentHuman <- fromJSON(file="../storage/ontologyHuman.json", method='C')
+#gets acronym of a region given by a region id (from ontology file)
+getAcronymByID <- function(child,ID){
+  if(!is.null(child)){
+    if(child$id==ID){
+      return(child)
+    }
+  }
+  
+  for(actchild in child$children){
+    res<-getAcronymByID(actchild,ID)
+    if(!is.null(res)){
+      if(res$id==ID){
+        return(res)
+      }
+    }
+  }
+  return(NULL)
+}
+
+getIDbyName <- function(child,name){
+  if(!is.null(child)){
+    if(child$name==name){
+      return(child)
+    }
+  }
+  
+  for(actchild in child$children){
+    res<-getIDbyName(actchild,name)
+    if(!is.null(res)){
+      if(res$name==name){
+        return(res)
+      }
+    }
+  }
+  return(NULL)
+}
+
+jet.colors <-
+  colorRampPalette(c("#00007F", "blue", "#007FFF", "cyan",
+                     "#7FFF7F", "yellow", "#FF7F00", "red", "#7F0000"))
+```
+
+```{r Read Human data and filter it for genes that are also in the DNDS-ratio file}
+#Read Human data and filter it for genes that are also in the DNDS-ratio file
+
+#gives a vector with the size of the atlas (1D vector of human brain atlas biopsy sites) where every position
+#is zero, execpt for positions where the region (given by the ID) can be found
+getAtlasRegionsOfIDHuman <- function(atlasRegions,ID){
+  newAtlasRegions<-atlasRegions==ID
+  
+  childrens<-getAcronymByID(documentHuman$msg[[1]],ID)$children
+  while(length(childrens)>0){
+    newChildren<-c()
+    for(i in 1:length(childrens)){
+      newAtlasRegions<-newAtlasRegions|(atlasRegions==childrens[[i]]$id)
+      newChildren<-c(newChildren,getAcronymByID(documentHuman$msg[[1]],childrens[[i]]$id)$children)
+    }
+    
+    childrens<-newChildren
+  }
+  return(newAtlasRegions)
+}
+
+atlasRegionsHuman<-readMat("../storage/atlasRegionsHuman.mat") #1D vector of human brain atlas biopsy sites
+regionInfo<-cbind(atlasRegionsHuman$indexX,atlasRegionsHuman$indexY,atlasRegionsHuman$indexZ)
+atlasRegionsHuman<-as.vector(atlasRegionsHuman$atlasRegions)
+
+regionName<-c()
+regionShortName<-c()
+
+for(rid in atlasRegionsHuman){
+  a<-getAcronymByID(documentHuman$msg[[1]],rid)
+  regionName<-c(regionName,a$name)
+  regionShortName<-c(regionShortName,a$acronym)
+}
+
+regionInfo<-cbind(regionShortName,regionName,regionInfo)
+colnames(regionInfo)<-c("acronym","name","mniX","mniY","mniZ")
+
+
+
+if(!exists("expressionHuman") && !exists("entrezIDsOfRowsHuman")){ #this if just makes it faster to reload biopsy site level gene expression data, since readMat is quite slow
+  all_genes<-readMat("../storage/all_genes_expression_Human.mat")
+  expressionHuman<-all_genes$expressionMatrix
+  entrezIDsOfRowsHuman<-all_genes$entrezIDsOfRows
+  
+  remove(all_genes)
+  gc()
+  
+  
+  expressionHuman<-t(apply(expressionHuman,1,function(x){(x-median(x,na.rm=TRUE))/mad(x,na.rm=TRUE)})) #normalize robust per biopsy site
+  expressionHuman<-apply(expressionHuman,2,function(x){(x-median(x,na.rm=TRUE))/mad(x,na.rm=TRUE)}) #normalize robust per gene (i.e. over the brain)
+}
+
+print(paste0("Dimension of human data: ",dim(expressionHuman)[1]," x ",dim(expressionHuman)[2]))
+
+entrezIDsInAMBAandDNDSHuman<-intersect(unique(humanEntrez),unique(entrezIDsOfRowsHuman))
+print(paste0("Human genes that are in ABA and DNDS-ratio file: ",length(entrezIDsInAMBAandDNDSHuman)))
+
+
+```
+
+```{r Filter genes that are human (and are in the DNDS ratio file)}
+#Filter genes that are human (and are in the DNDS ratio file)
+
+humanEntrezInAmba<-unique(humanEntrez[is.element(humanEntrez,entrezIDsInAMBAandDNDSHuman)])
+print(paste0("Genes that are in human (and are in the DNDS ratio file): ",length(humanEntrezInAmba), " unique: ",length(unique(humanEntrezInAmba))))
+```
+
+```{r Select columns (branches) and filter rows with NAs}
+#Select columns (branches) that should be used. Take only rows (genes) that have no NAs in the branches and are not all 0
+#Take also the mean for genes that are not unique for a human
+
+dnds[,colsToUse]<-apply(dnds[,colsToUse],2,function(x){as.numeric(x)})
+dnds_org<-dnds
+
+dnds[,colsToUse][(dnds[,colsToUse]==(-3)) & !is.na(dnds[,colsToUse])]<-0 #set DNDS ratios wih a -3 value (dN=0, dS>0) to 0
+
+dnds[,colsToUse][dnds[,colsToUse]<0 & !is.na(dnds[,colsToUse])]<-NA # set other special values below 0 to NA
+dnds_org[,colsToUse][dnds_org[,colsToUse]<0 & !is.na(dnds_org[,colsToUse])]<-NA
+
+
+print(paste0("Use cols: "))
+print(paste0(names(dnds)[colsToUse]))
+print(paste0("Rows before filter: ",dim(dnds)[1]))
+
+dnds_per_gene<-matrix(0,nrow=length(humanEntrezInAmba),ncol=length(colsToUse))
+for(actCol in 1:length(colsToUse)){
+  for(actRow in 1:length(humanEntrezInAmba)){
+    dnds_per_gene[actRow,actCol]<-mean(dnds[humanEntrez==humanEntrezInAmba[actRow],colsToUse[actCol]],na.rm=TRUE)
+  }
+}
+
+dnds_per_gene[is.nan(dnds_per_gene)]<-NA
+
+print(paste0("Rows after filter for unique human of the selected columns: ",dim(dnds_per_gene)[1]))
+
+rownames(dnds_per_gene)<-humanEntrezInAmba
+colnames(dnds_per_gene)<-names(dnds)[colsToUse]
+
+
+print(paste0("Dimension of data: ",dim(dnds_per_gene)[1]," x ",dim(dnds_per_gene)[2]," length of entrez (should be first dimension: ",length(humanEntrezInAmba)))
+
+print("Amount of rows not NA")
+apply(as.matrix(dnds_per_gene),2,function(x){sum(!is.na(x))})
+```
+
+```{r Rank-Normalize dnds column wise}
+#Rank-Normalize dnds column wise
+
+print(paste0("Column means/sd before normalization: "))
+cbind(apply(as.matrix(dnds_per_gene),2,function(x){mean(x,na.rm=TRUE)}),apply(as.matrix(dnds_per_gene),2,function(x){sd(x,na.rm=TRUE)}))
+
+normalized_dnds_per_gene<-(apply(as.matrix(dnds_per_gene),2,function(x){
+  y<-x[!is.na(x)]
+  y[y>0]<-rank(y[y>0],ties.method="min",na.last="keep")/sum(!is.na(y[y>0]))
+  x[!is.na(x)]<-y
+  x
+  }))
+normalized_dnds_per_gene[dnds_per_gene==0]<-0 
+colnames(normalized_dnds_per_gene)<-colnames(dnds_per_gene)
+
+
+
+print(paste0("Column means/sd after normalization: "))
+cbind(apply(as.matrix(normalized_dnds_per_gene),2,function(x){mean(x,na.rm=TRUE)}),apply(as.matrix(normalized_dnds_per_gene),2,function(x){sd(x,na.rm=TRUE)}),apply(as.matrix(normalized_dnds_per_gene),2,function(x){sum(x==min(x,na.rm=TRUE),na.rm=TRUE)}))
+```
+
+```{r Plot and write not normalized data}
+#Plot and write not normalized data
+
+boxplot(dnds_per_gene,main="Not normalized")
+boxplot(dnds_per_gene,outline=FALSE,main="Not normalized (without outlier)")
+png(paste0("../storage/",prefix,"dnds_distribution_plots/dnds_boxplot.png"),width=round(1200*0.45),height=300)
+boxplot(dnds_per_gene,outline=FALSE,main="Not normalized (without outlier)")
+dev.off();
+write.csv2(dnds_per_gene,paste0('../storage/',paste0("csvs/",prefix),"dnds_per_gene.csv"))
+```
+
+```{r Plot and write not normalized data with quantiles}
+#Plot and write not normalized data with quantiles
+
+par(mar=c(8,5,1,1))
+boxplot(dnds_per_gene,main="Not normalized",las=2)
+boxplot(dnds_per_gene,outline=FALSE,main="Not normalized (without outlier)",las=2)
+
+n <- ncol(dnds_per_gene)
+# width of each boxplot is 0.8
+x0s <- 1:n - 0.4
+x1s <- 1:n + 0.4
+# these are the y-coordinates for the horizontal lines
+# that you need to set to the desired values.
+y0s <- apply(dnds_per_gene,2,function(x){quantile(x,0.9,na.rm=TRUE)})
+
+
+# add segments
+segments(x0 = x0s, x1 = x1s, y0 = y0s, col = "red")
+
+png(paste0("../storage/",prefix,"dnds_distribution_plots/dnds_boxplot.png"),width=round(1200*0.45),height=300)
+par(mar=c(8,5,1,1))
+boxplot(dnds_per_gene,outline=FALSE,main="Not normalized (without outlier)",las=2)
+dev.off();
+
+png(paste0("../storage/",prefix,"dnds_distribution_plots/dnds_boxplot_90percentile.png"),width=round(1200*0.45),height=300)
+par(mar=c(8,5,1,1))
+boxplot(dnds_per_gene,outline=FALSE,main="Not normalized (without outlier)",las=2)
+segments(x0 = x0s, x1 = x1s, y0 = y0s, col = "red")
+dev.off();
+```
+
+```{r Plot and write normalized data}
+#Plot and write normalized data
+
+boxplot(normalized_dnds_per_gene,outline=FALSE,main="normalized (without outlier)")
+boxplot(normalized_dnds_per_gene,outline=TRUE,main="normalized (with outlier)")
+write.csv2(normalized_dnds_per_gene,paste0('../storage/',paste0("csvs/",prefix),"normalized_dnds_per_gene.csv"))
+
+```
+
+```{r Plot DNDS gene wide heatmap,fig.height=20, fig.width=9}
+#Plot DNDS gene wide heatmap
+
+normalized_dnds_per_gene_with_reordered<-normalized_dnds_per_gene[,c(1:19,21,20)]
+
+heatmap.2(normalized_dnds_per_gene_with_reordered,
+          density.info="none",
+          trace="none",
+          scale="none",
+          dendrogram="row",
+          na.color="#F0F0F0",
+          Colv=NA,
+          #keysize = 0.8,
+          #key.par = list(mar=c(4,0.3,8,0.3),cex=6),
+          key.title=NA,
+          key.xlab="Ranked DN/DS",
+          cexCol=1,
+          srtCol= 90,
+          labRow = FALSE,
+          col=c(colorpanel(100,"#ffffb2","#feb24c","#bd0026")),
+          margins = c(20,5),
+          distfun = function(mat) {
+              edist <- dist(mat)
+              edist[which(is.na(edist))] <- max(edist, na.rm=TRUE) * 1.1 
+              return(edist)
+          },
+          adjCol = c(1,1))
+
+#just also save it as png or svg
+#png(paste0("../storage/",prefix,"dnds_distribution_plots/dnds_heatmap.png"),width=round(3200*0.45),height=3200)
+svg(paste0("../storage/",prefix,"dnds_distribution_plots/dnds_heatmap.svg"),width=9,height=20)
+heatmap.2(normalized_dnds_per_gene_with_reordered,
+          density.info="none",
+          trace="none",
+          scale="none",
+          dendrogram="row",
+          na.color="#F0F0F0",
+          Colv=NA,
+          #keysize = 0.8,
+          #key.par = list(mar=c(4,0.3,8,0.3),cex=6),
+          key.title=NA,
+          key.xlab="Ranked DN/DS",
+          cexCol=1,
+          srtCol= 90,
+          labRow = FALSE,
+          col=c(colorpanel(100,"#ffffb2","#feb24c","#bd0026")),
+          margins = c(20,5),
+          distfun = function(mat) {
+              edist <- dist(mat)
+              edist[which(is.na(edist))] <- max(edist, na.rm=TRUE) * 1.1 
+              return(edist)
+          },
+          adjCol = c(1,1))
+dev.off()
+
+dnds_per_gene_with_reordered<-dnds_per_gene[,c(1:19,21,20)]
+dnds_per_gene_with_reordered[dnds_per_gene_with_reordered>1.5]<-1.5
+heatmap.2(dnds_per_gene_with_reordered,
+          density.info="none",
+          trace="none",
+          scale="none",
+          dendrogram="row",
+          na.color="#F0F0F0",
+          Colv=NA,
+          #keysize = 0.8,
+          #key.par = list(mar=c(4,0.3,8,0.3),cex=6),
+          key.title=NA,
+          key.xlab="Ranked DN/DS",
+          cexCol=1,
+          srtCol= 90,
+          labRow = FALSE,
+          col=c(colorpanel(100,"#ffffb2","#feb24c","#bd0026")),
+          margins = c(20,5),
+          distfun = function(mat) {
+              edist <- dist(mat)
+              edist[which(is.na(edist))] <- max(edist, na.rm=TRUE) * 1.1 
+              return(edist)
+          },
+          adjCol = c(1,1))
+
+#just also save it as png or svg
+#png(paste0("../storage/",prefix,"dnds_distribution_plots/dnds_heatmap_raw.png"),width=round(3200*0.45),height=3200)
+svg(paste0("../storage/",prefix,"dnds_distribution_plots/dnds_heatmap_raw.svg"),width=9,height=20)
+heatmap.2(dnds_per_gene_with_reordered,
+          density.info="none",
+          trace="none",
+          scale="none",
+          dendrogram="row",
+          na.color="#F0F0F0",
+          Colv=NA,
+          #keysize = 0.8,
+          #key.par = list(mar=c(4,0.3,8,0.3),cex=6),
+          key.title=NA,
+          key.xlab="Ranked DN/DS",
+          cexCol=1,
+          srtCol= 90,
+          labRow = FALSE,
+          col=c(colorpanel(100,"#ffffb2","#feb24c","#bd0026")),
+          margins = c(20,5),
+          distfun = function(mat) {
+              edist <- dist(mat)
+              edist[which(is.na(edist))] <- max(edist, na.rm=TRUE) * 1.1 
+              return(edist)
+          },
+          adjCol = c(1,1))
+dev.off()
+
+```
+
+```{r get names of genes}
+#get names of genes
+humanGeneNames<-unlist(mapIds(org.Hs.eg.db, paste(humanEntrezInAmba), 'SYMBOL', 'ENTREZID'))
+
+write.csv2(humanEntrezInAmba,paste0('../storage/',paste0("csvs/",prefix),"humanEntrezIDs.csv"))
+```
+
+```{r Generate genes lists for predicting functional maps WEIGHTED, include=TRUE}
+#Generate genes lists for predicting functional maps WEIGHTED
+
+addEntrezIDsHumanWeighted <- function(humanEntrezInAmba,gene_list_name_entrez_human,ratios){
+  setEntrezHuman<-c()
+
+  for(entrezIndex in (1:length(humanEntrezInAmba))){
+    humanEntrez<-humanEntrezInAmba[entrezIndex]
+  
+    if(!is.na(humanEntrez)){
+      if(length(setEntrezHuman)<length(unique(c(setEntrezHuman,humanEntrez)))){
+        setEntrezHuman<-c(setEntrezHuman,humanEntrez)
+        geneName<-unique(humanGeneNames[humanEntrezInAmba==humanEntrez])
+        geneName<-geneName[!is.na(geneName)]
+        if(length(geneName)==0){
+          geneName<-paste0("entrez_",humanEntrez)
+        }else{
+          geneName<-geneName[1]
+        }
+        
+        #humanName<-strsplit(geneName,"_")[[1]][1]
+        humanName<-geneName
+        humanName<-gsub("\\-", "_",humanName)
+        humanName<-gsub("\\.", "_",humanName)
+        humanName<-gsub("\\ ", "_",humanName)
+        if(!is.na(ratios[entrezIndex]) && (ratios[entrezIndex]>0)){ #exclude genes with 0 weightings (just makes the list smaller and therefore the algorithm more perfomant)
+          gene_list_name_entrez_human<-rbind(gene_list_name_entrez_human,c(humanName,humanEntrez,ratios[entrezIndex]))
+        }
+      }
+    }
+    
+  
+  }
+  return(gene_list_name_entrez_human)
+}
+
+gene_list_name_entrez_human<-matrix("",0,3)
+
+set.seed(42)
+
+for(branch in transistionsToUseForFunctionalMap){
+  print(paste0("branch: ",branch))
+  print(paste0("GeneAmount:",sum(!is.na(normalized_dnds_per_gene[,branch]) & (normalized_dnds_per_gene[,branch]>0))))
+  gene_list_name_entrez_human<-rbind(gene_list_name_entrez_human,c(paste0("dndsweighted_trans",branch),"",""))
+
+  gene_list_name_entrez_human<-addEntrezIDsHumanWeighted(humanEntrezInAmba,gene_list_name_entrez_human,(normalized_dnds_per_gene[,branch]))
+gene_list_name_entrez_human<-rbind(gene_list_name_entrez_human,c("","",""))
+
+}
+
+dir.create("../storage/setsToRunHuman")
+write.table(gene_list_name_entrez_human,paste0(paste0("../storage/setsToRunHuman",'/',strsplit(functionalMapsHuman,"/")[[1]][length(strsplit(functionalMapsHuman,"/")[[1]])],".csv")),sep=";", row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+```
+
+```{r Load task fmri data,fig.height=8, fig.width=8, include=TRUE}
+#Load task fmri data
+
+taskfmri<-readMat(paste0("../storage/taskfMRI.mat"))$taskfMRI
+tasknames<-unlist(readMat(paste0("../storage/taskfMRI.mat"))$tasknames)
+tasknames <- gsub("tfMRI_", "", tasknames)
+
+#Remove the contrast tasks i.e. only take the direct tasks
+dif_tasks<-c(3,6,9,10,17:22,25,28,39,44:47)
+tasknames<-tasknames[-dif_tasks]
+taskfmri<-taskfmri[,-dif_tasks]
+colnames(taskfmri)<-tasknames
+
+#define taskgroups
+colnames(taskfmri)[5:6] <- paste("LA-AVG", colnames(taskfmri)[5:6], sep = "_")
+colnames(taskfmri)[c(7,9)] <- paste("MO-RF+LF", colnames(taskfmri)[c(7,9)], sep = "_")
+colnames(taskfmri)[11] <- paste("MO-T", colnames(taskfmri)[11], sep = "_")
+colnames(taskfmri)[c(8,10)] <- paste("MO-RH+LH", colnames(taskfmri)[c(8,10)], sep = "_")
+colnames(taskfmri)[12] <- paste("MO-RH+LH", colnames(taskfmri)[12], sep = "_")
+colnames(taskfmri)[16] <- paste("SO-TOM", colnames(taskfmri)[16], sep = "_")
+colnames(taskfmri)[1] <- paste("EM-FACES", colnames(taskfmri)[1], sep = "_")
+colnames(taskfmri)[2] <- paste("EM-SHAPE", colnames(taskfmri)[2], sep = "_")
+taskfmri[,3]<-apply(taskfmri[,3:4],1,mean)
+colnames(taskfmri)[4] <- paste("GA-REWARD", colnames(taskfmri)[4], sep = "_")
+colnames(taskfmri)[3] <- paste("GA-AVG", "GAMBLING_AVG", sep = "_")
+colnames(taskfmri)[13:14] <- paste("RE-AVG", colnames(taskfmri)[13:14], sep = "_")
+colnames(taskfmri)[c(18,22,28)] <- paste("WM-FACE", colnames(taskfmri)[c(18,22,28)], sep = "_")
+colnames(taskfmri)[c(17,19:21,23:27,29:30)] <- paste("WM-REST", colnames(taskfmri)[c(17,19:21,23:27,29:30)], sep = "_")
+
+#Remove tasks that were not used in the paper
+taskfmri<-taskfmri[,-15]
+taskfmri<-taskfmri[,-2]
+
+taskfmri[is.na(taskfmri)]<-0
+taskfmri[abs(taskfmri)<5]<-0 #removing insiginifcant values (smaller than 5 sigmas)
+
+heatmap.2(cor(taskfmri),cexCol=0.5,cexRow=0.5,scale="none",density.info="none", trace="none")
+
+colorsOfBiopsyHuman<-c()
+for(actRegion in 1:length(atlasRegionsHuman)){
+  colorsOfBiopsyHuman<-c(colorsOfBiopsyHuman,paste0("#",getAcronymByID(documentHuman$msg[[1]],atlasRegionsHuman[[actRegion]][1])$color_hex_triplet))
+}
+
+namesOfBiopsyHuman<-c()
+for(actRegion in 1:length(atlasRegionsHuman)){
+  namesOfBiopsyHuman<-c(namesOfBiopsyHuman,paste0(getAcronymByID(documentHuman$msg[[1]],atlasRegionsHuman[[actRegion]][1])$name))
+}
+
+taskClasses<-sapply(colnames(taskfmri),function(x){sapply(strsplit(x, "_"),"[[",1)})
+
+taskGroupfmri<-sapply(unique(taskClasses),function(x){
+  if(sum(x==taskClasses)>1){
+    rowMeans(taskfmri[,x==taskClasses])
+    }else{
+      taskfmri[,x==taskClasses]
+    }})
+
+rownames(taskGroupfmri)<-namesOfBiopsyHuman
+ 
+# heatmap.2(t(taskGroupfmri[order(colorsOfBiopsyHuman),]),hclustfun=function(x){hclust(x,method="ward.D2")},main="taskGroupFMRI cortical regions",scale="none",density.info="none", trace="none",ColSideColors = sort(colorsOfBiopsyHuman),Colv=NA,col=colorpanel(100, "blue","white", "red"),margins=c(6,10),cexRow=0.8,cexCol=0.1,dendrogram="row")
+#  
+# heatmap.2(t(abs(taskGroupfmri)[order(colorsOfBiopsyHuman),]),hclustfun=function(x){hclust(x,method="ward.D2")},main="taskGroupFMRI cortical regions",scale="none",density.info="none", trace="none",ColSideColors = sort(colorsOfBiopsyHuman),Colv=NA,col=colorpanel(100, "white","orange", "red"),margins=c(6,10),cexRow=0.8,cexCol=0.1,dendrogram="row")
+
+```
+
+```{r Load network data,fig.height=8, fig.width=8, include=TRUE}
+#Load network data
+
+#Creating networks from literature
+networks<-matrix(0,nrow=sum(atlasRegionsHuman>0),ncol=11)
+colnames(networks)<-c("cortico-limbic_network","mPFC-AMY_network","mPFC-Acb_network","deafult_mode_network","salience_network","central_executive_network","sensorimotor_network","visuospatial_network","fronto-parietal","dorsal_attention","ventral_attention")
+
+networksIDHumanList<-list()
+
+networksIDHumanList[[length(networksIDHumanList)+1]]<-c(4035,4021,4050,4028,4268,4220,4249,9391,4212,4205,4156,4096,4111,4118,4071,4125,4278,4287,4293,4392,4140,4147,4053,4327)
+networksIDHumanList[[length(networksIDHumanList)+1]]<-c(4021,4050,4047,4897,4062,4327)
+networksIDHumanList[[length(networksIDHumanList)+1]]<-c(4021,4050,4047,4897,4062,4290)
+networksIDHumanList[[length(networksIDHumanList)+1]]<-c(4021,4050,4047,4897,4062,4235,4228,4242,4147,4111,4249)
+networksIDHumanList[[length(networksIDHumanList)+1]]<-c(4225,4272,4290,9066,9072,4540,12927,4320,4313)
+networksIDHumanList[[length(networksIDHumanList)+1]]<-c(4021,4028,4085,9372,4278,12920)
+networksIDHumanList[[length(networksIDHumanList)+1]]<-c(4021,4272,4010,4085)
+networksIDHumanList[[length(networksIDHumanList)+1]]<-c(4028,4085,4181,4118,4184)
+networksIDHumanList[[length(networksIDHumanList)+1]]<-c(4028,4096,4103)
+networksIDHumanList[[length(networksIDHumanList)+1]]<-c(4104,4096,4028)
+networksIDHumanList[[length(networksIDHumanList)+1]]<-c(4035,4133,4103)
+
+
+for(actNetwork in 1:length(networksIDHumanList)){
+  networks[,actNetwork]<-rep(FALSE,length(atlasRegionsHuman))
+  for(actSubRegionID in networksIDHumanList[[actNetwork]]){
+    networks[,actNetwork]<-networks[,actNetwork]|(getAtlasRegionsOfIDHuman(atlasRegionsHuman,actSubRegionID)>0)
+  }
+}
+
+#heatmap.2(t(abs(networks)[order(colorsOfBiopsyHuman),]),hclustfun=function(x){hclust(x,method="ward.D2")},main="literature network regions",scale="none",density.info="none", trace="none",ColSideColors = sort(colorsOfBiopsyHuman),Colv=NA,col=colorpanel(100, "white","orange", "red"),margins=c(6,10),cexRow=0.8,cexCol=0.1,dendrogram="row")
+```
+
+```{r Visualize branches to networks and tasks combined on region level,fig.height=8, fig.width=8}
+#Visualize branches to networks and tasks combined on region level
+
+regionsIDsHumanLarge<-list()
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4035)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4021)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4050)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4028)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4268)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4220)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4249)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4212)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4205)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4156)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4096)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4111)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4118)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4071)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4125)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4140)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4147)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4053)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4047)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4897)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4062)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4235)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4228)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4225)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4085)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4010)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4181)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4184)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4278)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4287)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4293)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4392)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4327)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4290)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(9066)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(9072)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4540)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4313)
+regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-c(4321)
+
+namesOfRegionsLarge<-c("IFG",
+"SFG",
+"MOrG",
+"MFG",
+"Ins",
+"CgG",
+"HiF",
+"SOG",
+"IOG",
+"FuG",
+"SPL",
+"AnG",
+"Pcu",
+"PCLa",
+"PCLp",
+"MTG",
+"ITG",
+"AOrG",
+"GRe",
+"SRoG",
+"SCG",
+"CgGr",
+"CgGp",
+"CgGf",
+"PoG",
+"PrG",
+"OP",
+"Cun",
+"Cd",
+"Pu",
+"GP",
+"TH",
+"Amg",
+"Acb",
+"VTA",
+"SN",
+"Hy",
+"BSTl",
+"Cl")
+
+colorsOfRegionsLarge<-c()
+
+combinedNetworks<-cbind(abs(taskGroupfmri),abs(networks))
+combinedNetworksRegionWise<-matrix(0,0,ncol(combinedNetworks))
+
+for(actRegionIndex in 1:length(regionsIDsHumanLarge)){
+  actRegionAtlas<-getAtlasRegionsOfIDHuman(atlasRegionsHuman,regionsIDsHumanLarge[actRegionIndex][1])>0
+  a<-getAcronymByID(documentHuman$msg[[1]],regionsIDsHumanLarge[actRegionIndex][1])
+  colorsOfRegionsLarge<-c(colorsOfRegionsLarge,paste0("#",a$color_hex_triplet))
+  combinedNetworksRegionWise<-rbind(combinedNetworksRegionWise,apply(combinedNetworks,2,function(x){
+    max(x[actRegionAtlas])
+  }))
+}
+rownames(combinedNetworksRegionWise)<-namesOfRegionsLarge
+
+
+write.csv2(t(combinedNetworksRegionWise[order(colorsOfRegionsLarge),1:ncol(abs(taskGroupfmri))]),paste0('../storage/',paste0("csvs/"),"task_network_regions.csv"))
+heatmap.2(t(combinedNetworksRegionWise[order(colorsOfRegionsLarge),1:ncol(abs(taskGroupfmri))]),hclustfun=function(x){hclust(x,method="ward.D2")},main="task network regions",scale="none",density.info="none", trace="none",ColSideColors = sort(colorsOfRegionsLarge),Colv=NA,col=colorpanel(100, "white","orange", "red"),margins=c(6,10),cexRow=0.8,cexCol=0.8,dendrogram="row")
+
+write.csv2(t(combinedNetworksRegionWise[order(colorsOfRegionsLarge),(1:ncol(abs(taskGroupfmri)))+ncol(abs(networks))]),paste0('../storage/',paste0("csvs/"),"literuature_network_regions.csv"))
+heatmap.2(t(combinedNetworksRegionWise[order(colorsOfRegionsLarge),(1:ncol(abs(taskGroupfmri)))+ncol(abs(networks))]),hclustfun=function(x){hclust(x,method="ward.D2")},main="literature network regions",scale="none",density.info="none", trace="none",ColSideColors = sort(colorsOfRegionsLarge),Colv=NA,col=colorpanel(100, "white","orange", "red"),margins=c(6,10),cexRow=0.8,cexCol=0.8,dendrogram="row")
+
+```
+
+```{r Create gene-wise correlation to tasks and networks for biclustering}
+#Create gene-wise correlation to tasks and networks for biclustering
+
+  resultsTableCorrelation<-matrix(0,length(humanEntrezInAmba),ncol(taskGroupfmri)+ncol(networks))
+  rownames(resultsTableCorrelation)<-humanEntrezInAmba
+  colnames(resultsTableCorrelation)<-c(colnames(taskGroupfmri),colnames(networks))
+  
+  
+  for(k in 1:length(humanEntrezInAmba)){
+     resultsTableCorrelation[k,1:ncol(taskGroupfmri)]<-apply(abs(taskGroupfmri),2,function(x){
+        cor(x,expressionHuman[,match(humanEntrezInAmba[k],entrezIDsOfRowsHuman)],use ="pairwise.complete.obs",method="spearman")
+      })
+     
+    resultsTableCorrelation[k,(1:ncol(networks))+ncol(taskGroupfmri)]<-apply(abs(networks),2,function(x){
+        cor(x,expressionHuman[,match(humanEntrezInAmba[k],entrezIDsOfRowsHuman)],use ="pairwise.complete.obs",method="spearman")
+      })
+  }
+  write.csv2(resultsTableCorrelation,paste0('../storage/',paste0("csvs/",prefix),"gene_task_network_correlation_brainwide.csv"))
+ 
+  head(resultsTableCorrelation)
+  
+  gene_wise_network_correlation<-resultsTableCorrelation
+  gene_wise_network_correlationOrg<-gene_wise_network_correlation
+  
+  gene_wise_network_correlation[,1:11]<-rank(gene_wise_network_correlation[,1:11],ties.method="max",na.last=FALSE)/length(unlist(gene_wise_network_correlation[,1:11]))
+  gene_wise_network_correlation[,12:22]<-rank(gene_wise_network_correlation[,12:22],ties.method="max",na.last=FALSE)/length(unlist(gene_wise_network_correlation[,12:22]))
+  
+  
+  gene_wise_network_correlation[,]<-t(apply(gene_wise_network_correlation[,],1,function(x){
+   rank(x,ties.method="max",na.last=FALSE)/length(x)
+  }))
+    
+  gene_wise_network_correlation[,]<-t(apply(gene_wise_network_correlation[,],1,function(x){
+    x[x==min(x)]<-0
+    x
+  }))
+  
+  
+  gene_wise_network_correlation[gene_wise_network_correlationOrg<=0.1]<-0
+
+```
+
+
+```{r DNDS to network correlation, fig.height=4, fig.width=8, include=TRUE}
+#DNDS to network correlation
+
+  time_clusters_celltype_cor<-cor(dnds_per_gene,(gene_wise_network_correlation),method="spearman",use="pairwise.complete.obs")
+    
+  rownames(time_clusters_celltype_cor)<-colnames(dnds_per_gene)
+  colnames(time_clusters_celltype_cor)<-colnames(gene_wise_network_correlation)
+  
+  
+  time_clusters_celltype_cor<-time_clusters_celltype_cor[,apply(time_clusters_celltype_cor,2,function(x){sum(is.na(x))})<nrow(time_clusters_celltype_cor)]
+  time_clusters_celltype_cor[is.na(time_clusters_celltype_cor)]<-0
+  
+  
+  heatmap.2((time_clusters_celltype_cor),scale="none",density.info="none",cexRow=0.8,cexCol=0.8, trace="none",col=colorpanel(100, "blue","white", "red"),key.xlab = "Spearman rank correlation",dendrogram="col",Rowv=NA)
+  
+  dev.copy(png,paste0("../storage/biclustering/DNDS_col_Network_col_cor.png"),width=1000,height=500)
+  dev.off()
+
+  write.csv2(time_clusters_celltype_cor,paste0("../storage/biclustering/DNDS_col_Network_col_cor.csv"))
+  
+  time_clusters_celltype_cor_norm<-t(apply(time_clusters_celltype_cor,1,scale))
+  time_clusters_celltype_cor_norm[time_clusters_celltype_cor_norm>3]<-3
+  time_clusters_celltype_cor_norm[time_clusters_celltype_cor_norm<(-3)]<-(-3)
+  
+  colnames(time_clusters_celltype_cor_norm)<-colnames(time_clusters_celltype_cor)
+  rownames(time_clusters_celltype_cor_norm)<-rownames(time_clusters_celltype_cor)
+  
+    heatmap.2((time_clusters_celltype_cor_norm),scale="none",density.info="none",cexRow=0.8,cexCol=0.8, trace="none",col=colorpanel(100, "blue","white", "red"),key.xlab = "Row z-score",dendrogram="col",Rowv=NA)
+  
+  dev.copy(png,paste0("../storage/biclustering/DNDS_col_Network_col_cor_row_norm.png"),width=1000,height=500)
+  dev.off()
+```
+
+
+```{r Calculate functional maps (p-value maps), include=TRUE}
+# Calculate functional maps
+
+############ RUN UNTIL HERE, THEN COMPUTE p-value maps  ############
+############ YOU SHOULD BETTER RUN THIS ON A MACHINE    ############
+############ WITH >10 CORES SINCE THIS CAN TAKE A WHILE ############
+
+#you don't need to run this, results are included
+#source("predict_human_expression_synergy.R")
+```
+
+```{r Compare functional maps (p-value maps) of branches to taskfMRI,fig.height=8, fig.width=8}
+#Compare functional maps (p-value maps) of branches to taskfMRI
+
+resultsTableCorrelation<-matrix(0,length(transistionsToUseForFunctionalMap),ncol(taskGroupfmri))
+rownames(resultsTableCorrelation)<-transistionsToUseForFunctionalMap
+colnames(resultsTableCorrelation)<-colnames(taskGroupfmri)
+
+#load pvalue maps an correlate it with teh results table
+actRow<-1
+for(k in transistionsToUseForFunctionalMap){
+  if(file.exists(paste0(functionalMapsHuman,'/','pvalues/dndsweighted_trans',k,'_ttest_geneExpr.rds'))){
+    pvalsExprHuman<--log10(readRDS(paste0(functionalMapsHuman,'/','pvalues/dndsweighted_trans',k,'_ttest_geneExpr.rds')))
+    pvalsExprHuman[pvalsExprHuman>3]<-3
+    resultsTableCorrelation[actRow,]<-apply(abs(taskGroupfmri),2,function(x){
+      cor(x,pvalsExprHuman,use ="pairwise.complete.obs",method="spearman")
+    })
+    actRow<-actRow+1
+  }
+}
+
+rownames(resultsTableCorrelation)<-colnames(dnds_per_gene)[transistionsToUseForFunctionalMap]
+
+heatmap.2(t(resultsTableCorrelation),scale="none",density.info="none",cexRow=0.8,cexCol=0.8, trace="none",col=colorpanel(100, "blue","white", "red"),key.xlab = "Spearman rank correlation",dendrogram="row",Colv=NA)
+
+dev.copy(png,paste0("../storage/",prefix,"branch_to_network_and_tasks_correlation_dndsweighted/additional_plots/branch_to_task_rank_correlation.png"))
+dev.off()
+
+heatmap.2(apply(resultsTableCorrelation,1,function(x){
+    rank(x,ties.method="max",na.last=FALSE)/length(x)
+  }),scale="none",density.info="none",cexRow=0.8,cexCol=0.8, trace="none",col=colorpanel(100, "white","orange", "red"),key.xlab = "Column rank normalization",dendrogram="row",Colv=NA)
+
+dev.copy(png,paste0("../storage/",prefix,"branch_to_network_and_tasks_correlation_dndsweighted/additional_plots/branch_to_task_rank_correlation_column_normalized.png"))
+dev.off()
+
+```
+
+```{r Compare branches to networks,fig.height=8, fig.width=8}
+#Compare branches to networks
+
+
+resultsTableCorrelation<-matrix(0,length(transistionsToUseForFunctionalMap),ncol(networks))
+rownames(resultsTableCorrelation)<-transistionsToUseForFunctionalMap
+colnames(resultsTableCorrelation)<-colnames(networks)
+
+actRow<-1
+for(k in transistionsToUseForFunctionalMap){
+  if(file.exists(paste0(functionalMapsHuman,'/','pvalues/dndsweighted_trans',k,'_ttest_geneExpr.rds')) && file.exists(paste0(functionalMapsHuman,'/','pvalues/dndsweighted_trans',k,'_ttest_geneExpr.rds'))){
+  pvalsExprHuman<--log10(readRDS(paste0(functionalMapsHuman,'/','pvalues/dndsweighted_trans',k,'_ttest_geneExpr.rds')))
+    pvalsExprHuman[pvalsExprHuman>3]<-3
+
+    resultsTableCorrelation[actRow,]<-apply(abs(networks),2,function(x){
+      cor(x,pvalsExprHuman,use ="pairwise.complete.obs",method="spearman")
+    })
+  }
+  actRow<-actRow+1
+}
+rownames(resultsTableCorrelation)<-colnames(dnds_per_gene)[transistionsToUseForFunctionalMap]
+
+
+heatmap.2(t(resultsTableCorrelation),scale="none",density.info="none",cexRow=0.8,cexCol=0.8, trace="none",col=colorpanel(100, "blue","white", "red"),key.xlab = "Spearman rank correlation",dendrogram="row",Colv=NA)
+
+dev.copy(png,paste0("../storage/",prefix,"branch_to_network_and_tasks_correlation_dndsweighted/additional_plots/branch_to_network_rank_correlation.png"))
+dev.off()
+
+
+heatmap.2(apply(resultsTableCorrelation,1,function(x){
+    rank(x,ties.method="max",na.last=FALSE)/length(x)
+  }),scale="none",density.info="none",cexRow=0.8,cexCol=0.8, trace="none",col=colorpanel(100, "white","orange", "red"),key.xlab = "Column rank normalization",dendrogram="row",Colv=NA)
+
+dev.copy(png,paste0("../storage/",prefix,"branch_to_network_and_tasks_correlation_dndsweighted/additional_plots/branch_to_network_rank_correlation_column_normalized.png"))
+dev.off()  
+  
+```
+
+```{r Compare branches to networks and tasks combined,fig.height=8, fig.width=8}
+#Compare branches to networks and tasks combined
+resultsTableCorrelation<-matrix(0,length(transistionsToUseForFunctionalMap),ncol(networks)+ncol(taskGroupfmri))
+rownames(resultsTableCorrelation)<-transistionsToUseForFunctionalMap
+colnames(resultsTableCorrelation)<-c(colnames(networks),colnames(taskGroupfmri))
+
+actRow<-1
+for(k in transistionsToUseForFunctionalMap){
+  if(file.exists(paste0(functionalMapsHuman,'/','pvalues/dndsweighted_trans',k,'_ttest_geneExpr.rds'))){
+
+    pvalsExprHuman<--log10(readRDS(paste0(functionalMapsHuman,'/','pvalues/dndsweighted_trans',k,'_ttest_geneExpr.rds')))
+    pvalsExprHuman[pvalsExprHuman>3]<-3
+    
+    resultsTableCorrelation[actRow,]<-c(apply(abs(networks),2,function(x){
+      cor(x,pvalsExprHuman,use ="pairwise.complete.obs",method="spearman")
+    }),
+    apply(abs(taskGroupfmri),2,function(x){
+      cor(x,pvalsExprHuman,use ="pairwise.complete.obs",method="spearman")
+    })
+    )
+  }
+  actRow<-actRow+1
+}
+
+resultsTableCorrelation[,1:ncol(networks)]<-rank(resultsTableCorrelation[,1:ncol(networks)],ties.method="max",na.last=FALSE)/length(unlist(resultsTableCorrelation[,1:ncol(networks)]))
+resultsTableCorrelation[,(1:ncol(taskGroupfmri))+ncol(networks)]<-rank(resultsTableCorrelation[,(1:ncol(taskGroupfmri))+ncol(networks)],ties.method="max",na.last=FALSE)/length(unlist(resultsTableCorrelation[,(1:ncol(taskGroupfmri))+ncol(networks)]))
+rownames(resultsTableCorrelation)<-colnames(dnds_per_gene)[transistionsToUseForFunctionalMap]
+
+heatmap.2(t(resultsTableCorrelation),scale="none",density.info="none",cexRow=0.8,cexCol=0.8, trace="none",col=colorpanel(100, "blue","white", "red"),key.xlab = "Block-ranks",dendrogram="row",Colv=NA)
+
+dev.copy(png,paste0("../storage/",prefix,"branch_to_network_and_tasks_correlation_dndsweighted/branch_to_combined_rank_correlation.png"))
+dev.off()
+
+heatmap.2(t(apply(resultsTableCorrelation,2,function(x){
+    rank(x,ties.method="max",na.last=FALSE)/length(x)
+  })),scale="none",density.info="none",cexRow=0.8,cexCol=0.8, trace="none",col=colorpanel(100, "white","orange", "red"),key.xlab = "Row rank normalization",dendrogram="row",Colv=NA)
+  
+dev.copy(png,paste0("../storage/",prefix,"branch_to_network_and_tasks_correlation_dndsweighted/additional_plots/branch_to_combined_rank_correlation_row_normalized.png"))  
+dev.off()
+  
+heatmap.2(apply(resultsTableCorrelation,1,function(x){
+    rank(x,ties.method="max",na.last=FALSE)/length(x)
+  }),scale="none",density.info="none",cexRow=0.8,cexCol=0.8, trace="none",col=colorpanel(100, "white","orange", "red"),key.xlab = "Column rank normalization",dendrogram="row",Colv=NA)
+  
+dev.copy(png,paste0("../storage/",prefix,"branch_to_network_and_tasks_correlation_dndsweighted/branch_to_combined_rank_correlation_column_normalized.png"))  
+dev.off()
+
+```
+
+```{r Set large brain regions}
+#Set large brain regions
+regionNamesList<-c("myelencephalon","cerebellum","pons","pretectal region","hypothalamus","subthalamus","thalamus","habenular nuclei","paraventricular nuclei of thalamus","pineal gland","basal forebrain","basal ganglia","claustrum","fusiform gyrus","Heschl's gyrus","inferior temporal gyrus","middle temporal gyrus","planum polare","planum temporale","superior temporal gyrus","temporal pole","transverse gyri","inferior parietal lobule","paracentral lobule, posterior part","postcentral gyrus","precuneus","superior parietal lobule","cuneus","inferior occipital gyrus","lingual gyrus","occipital pole","occipito-temporal gyrus","superior occipital gyrus","cingulate gyrus","hippocampal formation","parahippocampal gyrus","piriform cortex","anterior orbital gyrus","frontal operculum","frontal pole","gyrus rectus","inferior frontal gyrus","inferior rostral gyrus","lateral orbital gyrus","medial orbital gyrus","middle frontal gyrus","paracentral lobule, anterior part","parolfactory gyri","posterior orbital gyrus","precentral gyrus","superior frontal gyrus","superior rostral gyrus","insula","amygdalohippocampal transition zone","basolateral nucleus","basomedial nucleus","central nucleus","cortico-medial group","lateral nucleus","central gray substance of midbrain","Edinger-Westphal nucleus","interstitial nucleus of Cajal","midbrain raphe nuclei","midbrain reticular formation","nucleus of Darkschewitsch","oculomotor nuclear complex","red nucleus","substantia nigra","trochlear nucleus","ventral tegmental area","inferior colliculus","superior colliculus")
+
+regionsIDsHumanLarge<-list()
+hasBiopsySites<-c()
+for(actName in regionNamesList){
+  idOfName<-getIDbyName(documentHuman$msg[[1]],actName)$id
+  regionsIDsHumanLarge[[length(regionsIDsHumanLarge)+1]]<-idOfName
+  amountOfBiopsySites<-sum(getAtlasRegionsOfIDHuman(atlasRegionsHuman,idOfName)>0)
+  if(amountOfBiopsySites==0){
+    print(paste(actName,"with id",idOfName,"has no biopsySites!"))
+  }
+  hasBiopsySites<-c(hasBiopsySites,amountOfBiopsySites>0)
+}
+
+print(paste("Length of regionNamesList:",length(regionNamesList)," should be equal to length of regionsIDsHumanLarge:",length(regionsIDsHumanLarge)))
+
+regionNamesList<-regionNamesList[hasBiopsySites]
+regionsIDsHumanLarge<-regionsIDsHumanLarge[hasBiopsySites]
+
+
+```
+
+```{r Functions and precomputation for plotting human data}
+#Functions and precomputation for plotting human data
+
+recursiveColorChange<-function(actNode,structureIDs,colorsOfStructures,restWhite=FALSE){
+  for(actChild in 1:xmlSize(actNode)){
+    attribs<-xmlAttrs(actNode[[actChild]])
+
+    if(!is.na(attribs["style"])){
+      isStructure<-attribs["structure_id"]==structureIDs
+      if(sum(isStructure,na.rm=TRUE)>0){
+       #print(attribs["style"])
+        if( !(substr(attribs["style"],nchar(attribs["style"])-6,nchar(attribs["style"]))=="#f2f1f0")){
+          if(!(substr(attribs["style"],nchar(attribs["style"])-6,nchar(attribs["style"]))=="#231f20")){
+            if(!(substr(attribs["style"],nchar(attribs["style"])-6,nchar(attribs["style"]))=="#6d6e70")){
+              if(!substr(attribs["style"],nchar(attribs["style"])-6,nchar(attribs["style"]))=="#872601"){
+                if(is.na(colorsOfStructures[isStructure])){
+                  if(restWhite) attribs["style"]<-paste0(substr(attribs["style"],0,nchar(attribs["style"])-7),"#ffffff")
+                  else attribs["style"]<-paste0(substr(attribs["style"],0,nchar(attribs["style"])-7),"#cdcdcd")
+                }else attribs["style"]<-paste0(substr(attribs["style"],0,nchar(attribs["style"])-7),colorsOfStructures[isStructure])
+              }else{
+                if(restWhite) attribs["style"]<-paste0(substr(attribs["style"],0,nchar(attribs["style"])-7),"#ffffff")
+                else attribs["style"]<-paste0(substr(attribs["style"],0,nchar(attribs["style"])-7),"#231f20")
+              }
+            }else{
+              if(restWhite) attribs["style"]<-paste0(substr(attribs["style"],0,nchar(attribs["style"])-7),"#ffffff")
+              else attribs["style"]<-paste0(substr(attribs["style"],0,nchar(attribs["style"])-7),"#6d6e70")
+            }
+          }else{
+        
+            if(restWhite) attribs["style"]<-paste0(substr(attribs["style"],0,nchar(attribs["style"])-7),"#ffffff")
+            else attribs["style"]<-paste0(substr(attribs["style"],0,nchar(attribs["style"])-7),"#231f20")
+          }
+          
+        }else{
+          if(restWhite) attribs["style"]<-paste0(substr(attribs["style"],0,nchar(attribs["style"])-7),"#ffffff")
+          else attribs["style"]<-paste0(substr(attribs["style"],0,nchar(attribs["style"])-7),"#ffffff")
+        }
+        xmlAttrs(actNode[[actChild]])<-attribs
+      }else{
+        print("BUG")
+      }
+    }
+    if(xmlSize(actNode[[actChild]])>0){
+      recursiveColorChange(actNode[[actChild]],structureIDs,colorsOfStructures,restWhite)
+    }
+    
+  }
+}
+
+recursiveGetAllStructures<-function(actNode){
+  structureIDs<-c()
+  for(actChild in 1:xmlSize(actNode)){
+    attribs<-xmlAttrs(actNode[[actChild]])
+    
+    if(!is.na(attribs["style"])){
+     structureIDs<-c(attribs["structure_id"],structureIDs)
+    }
+    if(xmlSize(actNode[[actChild]])>0){
+      structureIDs<-unique(c(structureIDs,recursiveGetAllStructures(actNode[[actChild]])))
+    }
+    
+  }
+  return(structureIDs)
+}
+
+getSmallestParentAtlasRegions <- function(atlasRegionsHuman,ID){
+  if(is.null(ID)){
+    return(rep(FALSE,length(atlasRegionsHuman)))
+  }
+  newAtlasRegions<-getAtlasRegionsOfIDHuman(atlasRegionsHuman,ID)
+ 
+  if(sum(newAtlasRegions>0)==0){
+    newAtlasRegions<-getSmallestParentAtlasRegions(atlasRegionsHuman,getAcronymByID(documentHuman$msg[[1]],ID)$parent_structure_id)
+  }
+    
+  return(newAtlasRegions)
+}
+
+uniqueRegionsHuman<-c()
+
+for (x in 1:104){
+  
+  fileName <- paste0("../storage/slice_svg/",x,".svg")
+  if(!file.exists(fileName)){
+    if(!dir.exists("../storage/slice_svg")){
+      dir.create("../storage/slice_svg")
+    }
+    if(!file.exists("../storage/slice_svg/slices.xml")){
+     download.file(paste0("http://api.brain-map.org/api/v2/data/query.xml?criteria=model::AtlasImage,rma::criteria,[annotated$eqtrue],alternate_images[image_type$eq%27Atlas+-+Human%27],rma::options[order$eq%27sub_images.section_number%27][num_rows$eqall]"),"../storage/slice_svg/slices.xml")
+    }
+     
+    slicesXML=xmlParse("../storage/slice_svg/slices.xml")
+    slicesXMLTop = xmlRoot(slicesXML)
+    slicesID<-xmlValue(slicesXMLTop[['atlas-images']][[x]][["id"]][1]$text)
+    download.file(paste0("http://api.brain-map.org/api/v2/svg_download/",slicesID,"?groups=265297119,266932194,266932196,266932197"),fileName)
+  }
+  
+  xmlfile=xmlParse(fileName)
+  xmltop = xmlRoot(xmlfile)
+  
+  uniqueRegionsHuman<-unique(c(uniqueRegionsHuman,recursiveGetAllStructures(xmltop[['g']])))
+}
+
+uniqueRegionsHumanAtlas<-list()
+
+for(actRegion in 1:length(uniqueRegionsHuman)){
+  uniqueRegionsHumanAtlas[[actRegion]]<-getSmallestParentAtlasRegions(atlasRegionsHuman,uniqueRegionsHuman[actRegion])
+}
+
+Mode <- function(x) {
+  ux <- unique(x[!is.na(x) & x>0])
+  if(length(ux)==0){
+    return(0)
+  }
+  ux[which.max(tabulate(match(x[!is.na(x) & x>0], ux)))]
+}
+
+
+plot_mri_style_image_human<-function(path_to_file,plotVals,maxVal,mip,isAlreadyInUniqueRegionsFormat=FALSE,discreteColorScale=FALSE,restWhite=FALSE){
+
+#volume that will be plotted 
+m<-array(0, length(uniqueRegionsHuman))
+
+plotVals[plotVals>maxVal]<-maxVal
+
+if(isAlreadyInUniqueRegionsFormat==FALSE){
+  for(actRegion in 1:length(uniqueRegionsHuman)){
+    if(mip==FALSE)
+      m[actRegion]<-Mode(plotVals[uniqueRegionsHumanAtlas[[actRegion]]])
+    else m[actRegion]<-mean(plotVals[uniqueRegionsHumanAtlas[[actRegion]]],na.rm=TRUE)
+  }
+}else{
+  m<-plotVals
+}
+
+#m[is.nan(m)]<-0
+#m[is.na(m)]<-0
+if(mip){
+  m[m<0]<-0
+}else{
+  m[m<1]<-NA
+}
+
+
+if(!is.null(path_to_file)){
+  png(paste0(path_to_file),width=2000,height=2500)  
+}
+  par(mfrow=c(4,3),mar = rep(0.1, 4)) 
+  
+  rb<-c()
+  if(discreteColorScale==TRUE){
+    rb<-getColorScale(maxVal)
+  }else{
+    m<-round(m*100)
+    rb<-getColorScale(maxVal*100+1)
+  }
+  
+  for (x in 1:11){
+    fileName <- paste0("../storage/slice_svg/",x*9,".svg")
+    
+    xmlfile=xmlParse(fileName)
+    xmltop = xmlRoot(xmlfile)
+    
+    
+    if(discreteColorScale==TRUE){
+      recursiveColorChange(xmltop[['g']],uniqueRegionsHuman,rb[m],restWhite=restWhite)
+    }else{
+      recursiveColorChange(xmltop[['g']],uniqueRegionsHuman,rb[m+1],restWhite=restWhite)
+    }
+    
+   
+    brainSVG <- rsvg(charToRaw(as(xmlfile, "character")),width=1500)
+    plot(c(0,0), type="n", axes=F, xlab="", ylab="")
+    rasterImage(brainSVG,1,-1,2,1)
+  }
+  image.scale <- function(z, zlim, col = heat.colors(12),
+                          breaks, horiz=TRUE, ylim=NULL, xlim=NULL, ...){
+    if(!missing(breaks)){
+      if(length(breaks) != (length(col)+1)){stop("must have one more break than colour")}
+    }
+    if(missing(breaks) & !missing(zlim)){
+      breaks <- seq(zlim[1], zlim[2], length.out=(length(col)+1)) 
+    }
+    if(missing(breaks) & missing(zlim)){
+      zlim <- range(z, na.rm=TRUE)
+      zlim[2] <- zlim[2]+c(zlim[2]-zlim[1])*(1E-3)#adds a bit to the range in both directions
+      zlim[1] <- zlim[1]-c(zlim[2]-zlim[1])*(1E-3)
+      breaks <- seq(zlim[1], zlim[2], length.out=(length(col)+1))
+    }
+    poly <- vector(mode="list", length(col))
+    for(i in seq(poly)){
+      poly[[i]] <- c(breaks[i], breaks[i+1], breaks[i+1], breaks[i])
+    }
+    xaxt <- ifelse(horiz, "s", "n")
+    yaxt <- ifelse(horiz, "n", "s")
+    if(horiz){YLIM<-c(0,1); XLIM<-range(breaks)}
+    if(!horiz){YLIM<-range(breaks); XLIM<-c(0,1)}
+    if(missing(xlim)) xlim=XLIM
+    if(missing(ylim)) ylim=YLIM
+    plot(1,1,t="n",ylim=ylim, xlim=xlim, xaxt=xaxt, yaxt=yaxt, xaxs="i", yaxs="i",cex.axis=6, ...)  
+    for(i in seq(poly)){
+      if(horiz){
+        polygon(poly[[i]], c(0,0,1,1), col=col[i], border=NA)
+      }
+      if(!horiz){
+        polygon(c(0,0,1,1), poly[[i]], col=col[i], border=NA)
+      }
+    }
+
+  }
+  
+  par(mgp=c(5,6,0))
+  if(!is.null(path_to_file)){
+    par(mar=c(15,5,15,5))
+  }else{
+    par(mar=c(3,1,3,1))
+  }
+
+   if(mip){
+     if(discreteColorScale==TRUE){
+       image.scale(c(0,((maxVal))),col=getColorScale((maxVal)))
+     }else{
+       image.scale(c(0,((maxVal))),col=getColorScale((maxVal*100)))
+     }
+      
+    }else{
+     if(discreteColorScale==TRUE){
+       image.scale(c(1,((maxVal))),col=getColorScale((maxVal)))
+     }else{
+       image.scale(c(1,((maxVal))),col=getColorScale((maxVal*100)))
+     }
+    }
+  
+  
+  if(!is.null(path_to_file)){
+    dev.off()
+  }
+
+}
+
+plot_mri_style_image_human_all_slices<-function(path_to_file,plotVals,maxVal,mip,isAlreadyInUniqueRegionsFormat=FALSE,discreteColorScale=FALSE,restWhite=FALSE){
+
+#volume that will be plotted 
+m<-array(0, length(uniqueRegionsHuman))
+
+plotVals[plotVals>maxVal]<-maxVal
+
+if(isAlreadyInUniqueRegionsFormat==FALSE){
+  for(actRegion in 1:length(uniqueRegionsHuman)){
+    if(mip==FALSE)
+      m[actRegion]<-Mode(plotVals[uniqueRegionsHumanAtlas[[actRegion]]])
+    else m[actRegion]<-mean(plotVals[uniqueRegionsHumanAtlas[[actRegion]]],na.rm=TRUE)
+  }
+}else{
+  m<-plotVals
+}
+
+#m[is.nan(m)]<-0
+#m[is.na(m)]<-0
+if(mip){
+  m[m<0]<-0
+}else{
+  m[m<1]<-NA
+}
+
+
+  png(paste0(path_to_file),width=10000,height=4000, type="cairo")  
+  par(mfrow=c(6,17),mar = rep(0.1, 4)) 
+  
+  rb<-c()
+  if(discreteColorScale==TRUE){
+    rb<-getColorScale(maxVal)
+  }else{
+    m<-round(m*100)
+    rb<-getColorScale(maxVal*100+1)
+  }
+  
+   for (x in 1:101){
+      fileName <- paste0("../storage/slice_svg/",x,".svg")
+    
+      
+      xmlfile=xmlParse(fileName)
+      xmltop = xmlRoot(xmlfile)
+      
+      
+      if(discreteColorScale==TRUE){
+        recursiveColorChange(xmltop[['g']],uniqueRegionsHuman,rb[m],restWhite=restWhite)
+      }else{
+        recursiveColorChange(xmltop[['g']],uniqueRegionsHuman,rb[m+1],restWhite=restWhite)
+      }
+      
+      brainSVG <- rsvg(charToRaw(as(xmlfile, "character")),width=1000)
+      plot(c(0,0), type="n", axes=F, xlab="", ylab="")
+      rasterImage(brainSVG,1,-1,2,1)
+    }
+  image.scale <- function(z, zlim, col = heat.colors(12),
+                          breaks, horiz=TRUE, ylim=NULL, xlim=NULL, ...){
+    if(!missing(breaks)){
+      if(length(breaks) != (length(col)+1)){stop("must have one more break than colour")}
+    }
+    if(missing(breaks) & !missing(zlim)){
+      breaks <- seq(zlim[1], zlim[2], length.out=(length(col)+1)) 
+    }
+    if(missing(breaks) & missing(zlim)){
+      zlim <- range(z, na.rm=TRUE)
+      zlim[2] <- zlim[2]+c(zlim[2]-zlim[1])*(1E-3)#adds a bit to the range in both directions
+      zlim[1] <- zlim[1]-c(zlim[2]-zlim[1])*(1E-3)
+      breaks <- seq(zlim[1], zlim[2], length.out=(length(col)+1))
+    }
+    poly <- vector(mode="list", length(col))
+    for(i in seq(poly)){
+      poly[[i]] <- c(breaks[i], breaks[i+1], breaks[i+1], breaks[i])
+    }
+    xaxt <- ifelse(horiz, "s", "n")
+    yaxt <- ifelse(horiz, "n", "s")
+    if(horiz){YLIM<-c(0,1); XLIM<-range(breaks)}
+    if(!horiz){YLIM<-range(breaks); XLIM<-c(0,1)}
+    if(missing(xlim)) xlim=XLIM
+    if(missing(ylim)) ylim=YLIM
+    plot(1,1,t="n",ylim=ylim, xlim=xlim, xaxt=xaxt, yaxt=yaxt, xaxs="i", yaxs="i",cex.axis=6, ...)  
+    for(i in seq(poly)){
+      if(horiz){
+        polygon(poly[[i]], c(0,0,1,1), col=col[i], border=NA)
+      }
+      if(!horiz){
+        polygon(c(0,0,1,1), poly[[i]], col=col[i], border=NA)
+      }
+    }
+
+  }
+  
+   par(mgp=c(3,6,0))
+   par(mar=c(15,5,15,5))
+
+   if(mip){
+     if(discreteColorScale==TRUE){
+       image.scale(c(0,((maxVal))),col=getColorScale((maxVal)))
+     }else{
+       image.scale(c(0,((maxVal))),col=getColorScale((maxVal*100)))
+     }
+      
+    }else{
+     if(discreteColorScale==TRUE){
+       image.scale(c(1,((maxVal))),col=getColorScale((maxVal)))
+     }else{
+       image.scale(c(1,((maxVal))),col=getColorScale((maxVal*100)))
+     }
+    }
+  
+   dev.off()
+
+}
+
+plot_mri_style_image_human_all_slices_and_significance<-function(path_to_file,plotPvals,fdr005,fdr01,justDrawOriginalColors=FALSE){
+    getColorScale<-function(amountOfColors,threshold){
+        greyColor<-colorpanel(amountOfColors,"#f9f9f9","#a8a8a8","#7a7a7a")
+        heatColor<-colorpanel(amountOfColors,"#ffffb2","#feb24c","#bd0026")
+        
+        if(is.na(threshold))
+          return(greyColor)
+        if(threshold<=1 || threshold==Inf)
+          return(greyColor)
+        return(c(greyColor[1:floor(threshold)],heatColor[(floor(threshold)+1):amountOfColors]))
+      }
+  
+    #volume that will be plotted 
+    m<-array(0, length(uniqueRegionsHuman))
+    plotPvals[is.na(plotPvals)]<-1
+    
+    
+    for(actRegion in 1:length(uniqueRegionsHuman)){
+      m[actRegion]<-quantile(-log10(plotPvals[uniqueRegionsHumanAtlas[[actRegion]]]),0.9,na.rm=TRUE)
+    }
+    
+    m[is.nan(m)]<-0
+    m[is.na(m)]<-0
+    m[m<0]<-0
+    
+    minimumPval<--log10(10^(-8))
+    
+    m[m>minimumPval]<-minimumPval
+    
+    png(paste0(path_to_file),width=10000,height=4000, type="cairo")  
+    par(mfrow=c(6,17),mar = rep(0.1, 4)) 
+    
+    
+    m<-round(m*1000)
+    rb<-getColorScale(minimumPval*1000+1,-log10(fdr01)*1000+1)
+    
+    for (x in 1:101){
+      fileName <- paste0("../storage/slice_svg/",x,".svg")
+    
+      
+      xmlfile=xmlParse(fileName)
+      xmltop = xmlRoot(xmlfile)
+      if(justDrawOriginalColors==FALSE){
+        recursiveColorChange(xmltop[['g']],uniqueRegionsHuman,rb[m+1])
+      }
+      
+      brainSVG <- rsvg(charToRaw(as(xmlfile, "character")),width=1000)
+      plot(c(0,0), type="n", axes=F, xlab="", ylab="")
+      rasterImage(brainSVG,1,-1,2,1)
+    }
+    image.scale <- function(z, zlim, col = heat.colors(12),
+                            breaks, horiz=TRUE, ylim=NULL, xlim=NULL, ...){
+      if(!missing(breaks)){
+        if(length(breaks) != (length(col)+1)){stop("must have one more break than colour")}
+      }
+      if(missing(breaks) & !missing(zlim)){
+        breaks <- seq(zlim[1], zlim[2], length.out=(length(col)+1)) 
+      }
+      if(missing(breaks) & missing(zlim)){
+        zlim <- range(z, na.rm=TRUE)
+        zlim[2] <- zlim[2]+c(zlim[2]-zlim[1])*(1E-3)#adds a bit to the range in both directions
+        zlim[1] <- zlim[1]-c(zlim[2]-zlim[1])*(1E-3)
+        breaks <- seq(zlim[1], zlim[2], length.out=(length(col)+1))
+      }
+      poly <- vector(mode="list", length(col))
+      for(i in seq(poly)){
+        poly[[i]] <- c(breaks[i], breaks[i+1], breaks[i+1], breaks[i])
+      }
+      xaxt <- ifelse(horiz, "s", "n")
+      yaxt <- ifelse(horiz, "n", "s")
+      if(horiz){YLIM<-c(0,1); XLIM<-range(breaks)}
+      if(!horiz){YLIM<-range(breaks); XLIM<-c(0,1)}
+      if(missing(xlim)) xlim=XLIM
+      if(missing(ylim)) ylim=YLIM
+      plot(1,1,t="n",ylim=ylim, xlim=xlim, xaxt=xaxt, yaxt=yaxt, xaxs="i", yaxs="i",cex.axis=8, ...)  
+      for(i in seq(poly)){
+        if(horiz){
+          polygon(poly[[i]], c(0,0,1,1), col=col[i], border=NA)
+        }
+        if(!horiz){
+          polygon(c(0,0,1,1), poly[[i]], col=col[i], border=NA)
+        }
+      }
+      if(!(fdr005==0)){
+        lines(c(-log10(fdr005),-log10(fdr005)),c(0,1),lty=3,lwd=5)
+      }
+      if(!(fdr01==0)){
+        lines(c(-log10(fdr01),-log10(fdr01)),c(0,1),lwd=5)
+      }
+    }
+    
+    par(mgp=c(3,6,0))
+    par(mar=c(15,5,15,5))
+    
+    image.scale(c(0,minimumPval),col=rb)
+    dev.off()
+    
+  }
+```
+
+```{r Calcualte evolutionary age of every biopsy site in human brain}
+#Calcualte evolutionary age of every biopsy site in human brain
+
+pvalueMapsRessource<-matrix(0, length(transistionsToUseForFunctionalMap),sum(atlasRegionsHuman>0))
+humanFunctionalMapsLogPvalueTop<-matrix(0, length(transistionsToUseForFunctionalMap),sum(atlasRegionsHuman>0))
+humanFunctionalMapsUniqueMapIsSignificant<-matrix(FALSE, length(transistionsToUseForFunctionalMap),length(uniqueRegionsHumanAtlas))
+
+ plot_mri_style_image_human_all_slices_and_significance(paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted_full/evoHumanHistory_region_colors.png"),rep(0,ncol(humanFunctionalMapsLogPvalueTop)),0,0,justDrawOriginalColors=TRUE)
+branch<-1
+for(k in transistionsToUseForFunctionalMap){
+  print(paste0("branch: ",branch))
+
+  humanFunctionalMapsLogPvalueTop[branch,]<-readRDS(paste0(functionalMapsHuman,'/','pvalues/',"dndsweighted_trans",k,'_ttest_geneExpr.rds'))
+  
+  sigThresh<-(-log10(max(humanFunctionalMapsLogPvalueTop[branch,][p.adjust(humanFunctionalMapsLogPvalueTop[branch,],method="BH")<=0.1])))
+  for(actRegion in 1:length(uniqueRegionsHumanAtlas)){
+    if(!is.na(sigThresh)){
+      if(quantile(-log10(humanFunctionalMapsLogPvalueTop[branch,][uniqueRegionsHumanAtlas[[actRegion]]]),0.9,na.rm=TRUE)>=sigThresh){
+        humanFunctionalMapsUniqueMapIsSignificant[branch,actRegion]<-TRUE
+      }
+    }
+  }
+  
+  fdr005<-max(humanFunctionalMapsLogPvalueTop[branch,][p.adjust(humanFunctionalMapsLogPvalueTop[branch,],method="BH")<=0.05])
+  fdr01<-max(humanFunctionalMapsLogPvalueTop[branch,][p.adjust(humanFunctionalMapsLogPvalueTop[branch,],method="BH")<=0.1])
+  plot_mri_style_image_human_all_slices_and_significance(paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted_full/evoHumanHistory_",colsToUseNames[k],"_90percentile_significant_sites",transistionsToUseForFunctionalMapPostfix,".png"),humanFunctionalMapsLogPvalueTop[branch,],fdr005,fdr01)
+  
+  pvalueMapsRessource[branch,]<-humanFunctionalMapsLogPvalueTop[branch,]
+  humanFunctionalMapsLogPvalueTop[branch,]<-(-log10(humanFunctionalMapsLogPvalueTop[branch,]))
+  branch<-branch+1
+}
+
+
+evolutionaryAgeUniqueRegionsHumanAtlasWiseTop<-unlist(sapply(uniqueRegionsHumanAtlas,function(x){
+  if(sum(x)>1){
+    which.max(apply(humanFunctionalMapsLogPvalueTop[,x],1,function(y){
+      mean(y,na.rm=TRUE)
+    }))
+  }else{
+    which.max(humanFunctionalMapsLogPvalueTop[,x])
+  }
+}))
+
+
+humanFunctionalMapsLogPvalueTop[humanFunctionalMapsLogPvalueTop>15]<-15
+
+
+pvalueMapsRessource<-t(pvalueMapsRessource)
+colnames(pvalueMapsRessource)<-colsToUseNames[transistionsToUseForFunctionalMap]
+
+appendSheet<-FALSE
+options(scipen = 999)
+options(warn=-1)
+if(file.exists( paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/pvalue_ressource",transistionsToUseForFunctionalMapPostfix,".xlsx"))){
+  file.remove( paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/pvalue_ressource",transistionsToUseForFunctionalMapPostfix,".xlsx"))
+}
+for(i in 1:ncol(pvalueMapsRessource)){
+  
+  regionPvals<-cbind(regionInfo,pvalueMapsRessource[,i])
+  colnames(regionPvals)[ncol(regionPvals)]<-"pvalue"
+  write.xlsx(regionPvals, file = paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/pvalue_ressource",transistionsToUseForFunctionalMapPostfix,".xlsx"),
+      sheetName = colnames(pvalueMapsRessource)[i], append = appendSheet,row.names = FALSE)
+  
+    appendSheet<-TRUE
+}
+options(warn=0)
+
+
+
+evolutionaryAgeBiopsyWiseTop<-unlist(apply((humanFunctionalMapsLogPvalueTop),2,function(x){return(which.max(x))}))
+evolutionaryAgeBiopsyWiseTop<-sapply(uniqueRegionsHumanAtlas,function(x){Mode(evolutionaryAgeBiopsyWiseTop[x])})
+evolutionaryAgeBiopsyWiseTopSign<-sapply(1:length(evolutionaryAgeBiopsyWiseTop),function(x){
+  if(is.na(evolutionaryAgeBiopsyWiseTop[x])){
+    return(NA)
+  }
+  if(humanFunctionalMapsUniqueMapIsSignificant[evolutionaryAgeBiopsyWiseTop[x],x]==FALSE){
+    return(NA)
+  }else{
+    return(evolutionaryAgeBiopsyWiseTop[x])
+  }
+})
+
+
+evolutionaryAgeBiopsyWiseTopHom<-unlist(apply((humanFunctionalMapsLogPvalueTop[(length(transistionsToUseForFunctionalMap)-2):length(transistionsToUseForFunctionalMap),]),2,function(x){return(which.max(x)+(length(transistionsToUseForFunctionalMap)-3))}))
+evolutionaryAgeBiopsyWiseTopHom<-sapply(uniqueRegionsHumanAtlas,function(x){Mode(evolutionaryAgeBiopsyWiseTopHom[x])})
+evolutionaryAgeBiopsyWiseTopHomSign<-sapply(1:length(evolutionaryAgeBiopsyWiseTopHom),function(x){
+  if(is.na(evolutionaryAgeBiopsyWiseTopHom[x])){
+    return(NA)
+  }
+  if(humanFunctionalMapsUniqueMapIsSignificant[evolutionaryAgeBiopsyWiseTopHom[x],x]==FALSE){
+    return(NA)
+  }else{
+    return(evolutionaryAgeBiopsyWiseTopHom[x])
+  }
+})
+
+
+evolutionaryAgeBiopsyWiseWATop<-apply((humanFunctionalMapsLogPvalueTop),2,function(x){
+  trans<-1:length(x)
+  if(sum(is.na(x))==length(x)){
+    return(NA)
+  }
+  y<-x
+  y[y<0]<-0
+  
+  return(sum((trans[!is.na(y)])*y[!is.na(y)]/(sum(y,na.rm=TRUE))))
+})
+evolutionaryAgeBiopsyWiseWATop<-sapply(uniqueRegionsHumanAtlas,function(x){mean(evolutionaryAgeBiopsyWiseWATop[x],na.rm=TRUE)})
+
+
+```
+
+```{r Cluster Evo History By Gene Expression,fig.height=6, fig.width=10}
+#Cluster Evo History By Gene Expression
+
+dir.create(paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted"))
+expressionHumanTopLargeRegions<-sapply(1:length(regionsIDsHumanLarge),function(actRegion){
+  actRegionAtlas<-getAtlasRegionsOfIDHuman(atlasRegionsHuman,regionsIDsHumanLarge[[actRegion]][1])>0
+  if(sum(actRegionAtlas)==1){
+    return(expressionHuman[actRegionAtlas,is.element(entrezIDsOfRowsHuman,humanEntrezInAmba)])
+  }else{
+    return(apply(expressionHuman[actRegionAtlas,is.element(entrezIDsOfRowsHuman,humanEntrezInAmba)],2,function(x){
+      mean(x,na.rm=TRUE)
+    }))
+  }
+})
+
+
+colnames(expressionHumanTopLargeRegions)<-1:ncol(expressionHumanTopLargeRegions)
+for(actRegion in 1:length(regionsIDsHumanLarge)){
+  colnames(expressionHumanTopLargeRegions)[actRegion]<-getAcronymByID(documentHuman$msg[[1]],regionsIDsHumanLarge[[actRegion]])$acronym
+}
+
+ cordist<-as.dist((1-cor(expressionHumanTopLargeRegions))/2)
+ cordist[is.na(cordist)]<-0
+ hc <- hclust(cordist,method="ward.D2")
+
+#hc <- hclust(dist(t(expressionHumanTopLargeRegions)),method="ward.D2")
+clustersExpression<-cutree(hc, k = 8)
+hist(clustersExpression)
+plot(hc)
+dev.copy(png,paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/gene_expression_clustering_dendrogram",transistionsToUseForFunctionalMapPostfix,".png"),width=900,height=400)
+dev.off()
+
+clustersExpressionCSV<-paste("Cluster",clustersExpression)
+names(clustersExpressionCSV)<-colnames(expressionHumanTopLargeRegions)
+sortedclustersExpressionCSV<-sort(clustersExpressionCSV)
+write.csv2(sortedclustersExpressionCSV,paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/expression_regions_cluster",transistionsToUseForFunctionalMapPostfix,".csv"))
+
+clustersExpressionBiopsyLevel<-rep(NA,length(atlasRegionsHuman))
+for(actRegion in 1:length(regionsIDsHumanLarge)){
+  actRegionAtlas<-getAtlasRegionsOfIDHuman(atlasRegionsHuman,regionsIDsHumanLarge[[actRegion]][1])
+  clustersExpressionBiopsyLevel[actRegionAtlas]<-clustersExpression[actRegion]
+}
+
+clusterProfiles<-matrix(0,dim(expressionHumanTopLargeRegions)[1],max(clustersExpression,na.rm=TRUE))
+for(timepoint in 1:dim(expressionHumanTopLargeRegions)[1]){
+  for(cluster in unique(clustersExpression)){
+    clusterProfiles[timepoint,cluster]<-mean(expressionHumanTopLargeRegions[timepoint,clustersExpression==cluster],rm.na=TRUE)
+  }
+}
+library(RColorBrewer)
+getColorScale<-function(amountOfColors){
+    #return(gsub('.{2}$', '',rainbow(amountOfColors)))
+  return(brewer.pal(n = 8, name = "Set2"))
+}
+rb<-getColorScale(max(clustersExpression,na.rm=TRUE))
+
+plot_mri_style_image_human(paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/expression_clustering",transistionsToUseForFunctionalMapPostfix,".png"),clustersExpressionBiopsyLevel,max(clustersExpressionBiopsyLevel,na.rm=TRUE),mip=FALSE,isAlreadyInUniqueRegionsFormat=FALSE,discreteColorScale=TRUE,restWhite=FALSE)
+plot_mri_style_image_human_all_slices(paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted_full/expression_clustering",transistionsToUseForFunctionalMapPostfix,".png"),clustersExpressionBiopsyLevel,max(clustersExpressionBiopsyLevel,na.rm=TRUE),mip=FALSE,isAlreadyInUniqueRegionsFormat=FALSE,discreteColorScale=TRUE,restWhite=FALSE)
+
+
+```
+
+```{r Cluster Evo History By Functional Maps,fig.height=6, fig.width=10}
+#Cluster Evo History By Functional Maps
+
+humanFunctionalMapsLogPvalueTopLargeRegions<-sapply(1:length(regionsIDsHumanLarge),function(actRegion){
+  actRegionAtlas<-getAtlasRegionsOfIDHuman(atlasRegionsHuman,regionsIDsHumanLarge[[actRegion]][1])>0
+  if(sum(actRegionAtlas)==1){
+    return(humanFunctionalMapsLogPvalueTop[,actRegionAtlas])
+  }else{
+    return(apply(humanFunctionalMapsLogPvalueTop[,actRegionAtlas],1,function(x){
+      mean(x,na.rm=TRUE)
+    }))
+  }
+})
+
+
+humanFunctionalMapsLogPvalueTopLargeRegionsWithoutNA<-humanFunctionalMapsLogPvalueTopLargeRegions
+humanFunctionalMapsLogPvalueTopLargeRegionsWithoutNA[is.na(humanFunctionalMapsLogPvalueTopLargeRegionsWithoutNA)]<-0
+humanFunctionalMapsLogPvalueTopLargeRegionsWithoutNA<-t(apply(humanFunctionalMapsLogPvalueTopLargeRegionsWithoutNA,1,rank)-1)
+humanFunctionalMapsLogPvalueTopLargeRegionsWithoutNA<-humanFunctionalMapsLogPvalueTopLargeRegionsWithoutNA/apply(humanFunctionalMapsLogPvalueTopLargeRegionsWithoutNA,1,max)
+humanFunctionalMapsLogPvalueTopLargeRegionsWithoutNA[humanFunctionalMapsLogPvalueTopLargeRegions==0 | is.na(humanFunctionalMapsLogPvalueTopLargeRegions)]<-0
+
+colnames(humanFunctionalMapsLogPvalueTopLargeRegionsWithoutNA)<-1:ncol(humanFunctionalMapsLogPvalueTopLargeRegionsWithoutNA)
+for(actRegion in 1:length(regionsIDsHumanLarge)){
+  colnames(humanFunctionalMapsLogPvalueTopLargeRegionsWithoutNA)[actRegion]<-getAcronymByID(documentHuman$msg[[1]],regionsIDsHumanLarge[[actRegion]])$acronym
+}
+
+write.csv2(humanFunctionalMapsLogPvalueTopLargeRegionsWithoutNA,paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/evoHumanHistory_region_pvals",transistionsToUseForFunctionalMapPostfix,".csv"))
+
+cordist<-as.dist((1-cor(humanFunctionalMapsLogPvalueTopLargeRegionsWithoutNA))/2)
+cordist[is.na(cordist)]<-0
+hc <- hclust(dist(t(humanFunctionalMapsLogPvalueTopLargeRegionsWithoutNA)),method="ward.D2")
+clustersEvoHist<-cutree(hc, k = 8)
+hist(clustersEvoHist)
+plot(hc)
+dev.copy(png,paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/evoHumanHistory_clustering_dendrogram",transistionsToUseForFunctionalMapPostfix,".png"),width=900,height=400)
+dev.off()
+
+clustersEvoHistCSV<-paste("Cluster",clustersEvoHist)
+names(clustersEvoHistCSV)<-colnames(humanFunctionalMapsLogPvalueTopLargeRegionsWithoutNA)
+sortedclustersExpressionCSV<-sort(clustersEvoHistCSV)
+write.csv2(sortedclustersExpressionCSV,paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/evoHumanHistory_clustering_cluster",transistionsToUseForFunctionalMapPostfix,".csv"))
+
+clustersEvoHistBipsyLevel<-rep(NA,length(atlasRegionsHuman))
+for(actRegion in 1:length(regionsIDsHumanLarge)){
+  actRegionAtlas<-getAtlasRegionsOfIDHuman(atlasRegionsHuman,regionsIDsHumanLarge[[actRegion]][1])
+  clustersEvoHistBipsyLevel[actRegionAtlas]<-clustersEvoHist[actRegion]
+}
+
+clusterProfiles<-matrix(0,dim(humanFunctionalMapsLogPvalueTopLargeRegionsWithoutNA)[1],max(clustersEvoHist,na.rm=TRUE))
+for(timepoint in 1:dim(humanFunctionalMapsLogPvalueTopLargeRegionsWithoutNA)[1]){
+  for(cluster in unique(clustersEvoHist)){
+    clusterProfiles[timepoint,cluster]<-mean(humanFunctionalMapsLogPvalueTopLargeRegionsWithoutNA[timepoint,clustersEvoHist==cluster],rm.na=TRUE)
+  }
+}
+library(RColorBrewer)
+getColorScale<-function(amountOfColors){
+    #return(gsub('.{2}$', '',rainbow(amountOfColors)))
+  return(brewer.pal(n = 8, name = "Set2"))
+}
+rb<-getColorScale(max(clustersEvoHist,na.rm=TRUE))
+
+matplot(1:nrow(clusterProfiles), clusterProfiles, lty=1,type='l', xlab='DNDS column', ylab='rank normalized mean p-value (selection pressure)', col=rb[1:max(clustersEvoHist,na.rm=TRUE)],ylim=c(0,1.1),lwd=2,xaxt="n")
+axis(side=1,at=1:nrow(clusterProfiles),labels=transistionsToUseForFunctionalMap)
+
+rownames(clusterProfiles)<-transistionsToUseForFunctionalMap
+colnames(clusterProfiles)<-paste("Cl",1:ncol(clusterProfiles))
+write.csv2(clusterProfiles,paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/evoHumanHistory_clustering_timeline",transistionsToUseForFunctionalMapPostfix,".csv"))
+
+legend('topright', inset=.05, legend=paste("Cl",1:ncol(clusterProfiles)), 
+                             lty=1, horiz=TRUE, col=rb[1:max(clustersEvoHist,na.rm=TRUE)])
+dev.copy(png,paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/evoHumanHistory_clustering_timeline",transistionsToUseForFunctionalMapPostfix,".png"),width=900,height=400)
+
+dev.off()
+
+plot_mri_style_image_human(paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/evoHumanHistory_clustering",transistionsToUseForFunctionalMapPostfix,".png"),clustersEvoHistBipsyLevel,max(clustersEvoHistBipsyLevel,na.rm=TRUE),mip=FALSE,isAlreadyInUniqueRegionsFormat=FALSE,discreteColorScale=TRUE,restWhite=FALSE)
+plot_mri_style_image_human_all_slices(paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted_full/evoHumanHistory_clustering",transistionsToUseForFunctionalMapPostfix,".png"),clustersEvoHistBipsyLevel,max(clustersEvoHistBipsyLevel,na.rm=TRUE),mip=FALSE,isAlreadyInUniqueRegionsFormat=FALSE,discreteColorScale=TRUE,restWhite=FALSE)
+
+regionCorrelation<-cor(humanFunctionalMapsLogPvalueTopLargeRegionsWithoutNA)
+
+heatmap.2(regionCorrelation,scale="none",density.info="none",cexRow=0.8,cexCol=0.8, trace="none",col=colorpanel(100, "blue","white", "red"),key.xlab = "Correlation",Rowv=order.dendrogram(as.dendrogram(hc)),Colv=order.dendrogram(as.dendrogram(hc)),hclustfun=function(x){hc})
+
+dev.copy(png,paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/evoHumanHistory_clustering_correlation",transistionsToUseForFunctionalMapPostfix,".png"))  
+dev.off()
+
+heatmap.2(cor(expressionHumanTopLargeRegions),scale="none",density.info="none",cexRow=0.8,cexCol=0.8, trace="none",col=colorpanel(100, "blue","white", "red"),key.xlab = "Correlation",Rowv=order.dendrogram(as.dendrogram(hc)),Colv=order.dendrogram(as.dendrogram(hc)),hclustfun=function(x){hc})
+
+dev.copy(png,paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/evoHumanHistory_expression_correlation",transistionsToUseForFunctionalMapPostfix,".png"))  
+dev.off()
+  
+heatmap.2(regionCorrelation-cor(expressionHumanTopLargeRegions),scale="none",density.info="none",cexRow=0.8,cexCol=0.8, trace="none",col=colorpanel(100, "blue","white", "red"),key.xlab = "Correlation Distance",Rowv=order.dendrogram(as.dendrogram(hc)),Colv=order.dendrogram(as.dendrogram(hc)),hclustfun=function(x){hc})
+
+dev.copy(png,paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/evoHumanHistory_clustering_expression_correlation_dist",transistionsToUseForFunctionalMapPostfix,".png"))  
+dev.off()
+```
+
+```{r Network Figure,fig.height=20, fig.width=20}
+#Network Figure
+
+colorsOfRegions<-sapply(1:length(regionsIDsHumanLarge),function(actRegion){
+  paste0("#",getAcronymByID(documentHuman$msg[[1]],regionsIDsHumanLarge[[actRegion]][1])$color_hex_triplet)
+})
+
+
+regionCorrelation<-cor(humanFunctionalMapsLogPvalueTopLargeRegionsWithoutNA)
+write.csv2(regionCorrelation,paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/evoHumanHistory_clustering_correlation.csv"))
+links <- matrix(0,nrow=0,ncol=3)
+
+
+for(i in 1:nrow(regionCorrelation)){
+  for(j in i:ncol(regionCorrelation)){
+    if(regionCorrelation[i,j]>0 && i!=j){
+      links <- rbind(links,c(rownames(regionCorrelation)[i],rownames(regionCorrelation)[j],regionCorrelation[i,j]))
+    }
+  }
+}
+
+links<-data.frame(
+    source=links[,1],
+    target=links[,2],
+    importance=as.numeric(links[,3])*100,
+    stringsAsFactors=FALSE
+    )
+
+nodes <- data.frame(
+    name=rownames(regionCorrelation)
+    )
+ 
+# Turn it into igraph object
+network <- graph_from_data_frame(d=links, vertices=nodes, directed=F) 
+E(network)$color<-gray.colors(100,start = 1, end = 0.1)[round(links$importance)+1]
+E(network)$weights<-links$importance
+V(network)$frame.color <- "white"
+V(network)$label.color <- "black"
+V(network)$label.font=2
+V(network)$label.family="sans"
+
+layoutingAlg<-layout_with_kk(network)
+
+# plot(network, vertex.color=colorsOfRegions,vertex.size=8, layout=layout_with_fr(network))
+# plot(network, vertex.color=colorsOfRegions,vertex.size=8, layout=layout_with_gem(network))
+# plot(network, vertex.color=colorsOfRegions,vertex.size=8, layout=layout_with_graphopt(network))
+# plot(network, vertex.color=colorsOfRegions,vertex.size=8, layout=layout_with_kk(network))
+# plot(network, vertex.color=colorsOfRegions,vertex.size=8, layout=layout_with_lgl(network))
+# plot(network, vertex.color=colorsOfRegions,vertex.size=8, layout=layout_with_mds(network))
+# plot(network, vertex.color=colorsOfRegions,vertex.size=8, layout=layout_with_dh(network))
+# plot(network, vertex.color=colorsOfRegions,vertex.size=8, layout=layout_with_sugiyama(network))
+# plot(network, vertex.color=colorsOfRegions,vertex.size=8, layout=layout_nicely(network))
+
+
+plot(network, vertex.color=colorsOfRegions,vertex.size=8, layout=layoutingAlg)
+plot(network, vertex.color=rb[clustersEvoHist],vertex.size=8, layout=layoutingAlg)
+
+nodecolors<-cbind(rownames(regionCorrelation),colorsOfRegions,rb[clustersEvoHist])
+colnames(nodecolors)<-c("regionname","AHBA color","clustercolor")
+write.csv2(nodecolors,"C:\\Users\\ganglberger\\Desktop\\nodecolors.csv")
+
+# Make the plot
+
+svg(filename=paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/evoHumanHistory_clustering_correlation_graph",transistionsToUseForFunctionalMapPostfix,".svg"),width=20, height=20)
+plot(network, vertex.color=colorsOfRegions,vertex.size=8, layout=layoutingAlg)
+dev.off()
+
+svg(filename=paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/evoHumanHistory_clustering_correlation_graph_cluster_cols",transistionsToUseForFunctionalMapPostfix,".svg"),width=20, height=20)
+plot(network, vertex.color=rb[clustersEvoHist],vertex.size=8, layout=layoutingAlg)
+dev.off()
+
+
+
+networksCombined<-cbind(taskGroupfmri,networks)
+colnames(networksCombined)<-c(colnames(taskGroupfmri),colnames(networks))
+
+networksCombined_on_network_res<-sapply(1:length(regionsIDsHumanLarge),function(actRegion){
+  actRegionAtlas<-getAtlasRegionsOfIDHuman(atlasRegionsHuman,regionsIDsHumanLarge[[actRegion]][1])>0
+  if(sum(actRegionAtlas)==1){
+    return(networksCombined[actRegionAtlas,])
+  }else{
+    return(apply(networksCombined[actRegionAtlas,],2,function(x){
+      max(x,na.rm=TRUE)
+    }))
+  }
+})
+
+networksCombined_on_network_res[networksCombined_on_network_res<0]<-0
+networkscombined_on_network_res_rank<-t(apply(networksCombined_on_network_res,1,function(x){rank(x,ties.method="max",na.last="keep")/length(x)}))
+networkscombined_on_network_res_rank[networksCombined_on_network_res==0]<-0
+
+for(act_network_index in 1:ncol(networksCombined)){
+  svg(filename=paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/evoHumanHistory_clustering_correlation_graph_",colnames(networksCombined)[act_network_index],"",transistionsToUseForFunctionalMapPostfix,".svg"),width=20, height=20)
+  
+  newColors<-rb[clustersEvoHist]
+  newColors[networkscombined_on_network_res_rank[act_network_index,]==0]<-"#FFFFFF"
+  
+plot(network, vertex.color=newColors,vertex.size=8, layout=layoutingAlg)
+dev.off()
+  
+}
+
+```
+
+```{r Plot evolutionary age of every biopsy site in human brain,fig.height=8, fig.width=8}
+#Plot evolutionary age of every biopsy site in human brain
+
+number_colnames<-1:length(transistionsToUseForFunctionalMap)
+names(number_colnames)<-colnames(dnds_per_gene)[transistionsToUseForFunctionalMap]
+write.csv2(number_colnames,paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/evoHumanHistory_numbers_to_columnnames",transistionsToUseForFunctionalMapPostfix,".csv"))
+
+
+  getColorScale<-function(amountOfColors){
+    return(jet.colors(amountOfColors))
+  }
+  
+    plot_mri_style_image_human(NULL,evolutionaryAgeUniqueRegionsHumanAtlasWiseTop,length(transistionsToUseForFunctionalMap),mip=FALSE,discreteColorScale=TRUE,isAlreadyInUniqueRegionsFormat=TRUE)
+   
+    plot_mri_style_image_human(paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/evoHumanHistory_regionwise_peak",transistionsToUseForFunctionalMapPostfix,".png"),evolutionaryAgeUniqueRegionsHumanAtlasWiseTop,length(transistionsToUseForFunctionalMap),mip=FALSE,discreteColorScale=TRUE,isAlreadyInUniqueRegionsFormat=TRUE)
+  
+  plot_mri_style_image_human(paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/evoHumanHistory_peak_modeRegion",transistionsToUseForFunctionalMapPostfix,".png"),evolutionaryAgeBiopsyWiseTop,length(transistionsToUseForFunctionalMap),mip=FALSE,discreteColorScale=TRUE,isAlreadyInUniqueRegionsFormat=TRUE)
+   plot_mri_style_image_human(paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/evoHumanHistory_peak_modeRegion",transistionsToUseForFunctionalMapPostfix,"_sign.png"),evolutionaryAgeBiopsyWiseTopSign,length(transistionsToUseForFunctionalMap),mip=FALSE,discreteColorScale=TRUE,isAlreadyInUniqueRegionsFormat=TRUE)
+  
+  
+  plot_mri_style_image_human(paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/evoHumanHistoryWA_meanRegion",transistionsToUseForFunctionalMapPostfix,".png"),evolutionaryAgeBiopsyWiseWATop,length(transistionsToUseForFunctionalMap),mip=FALSE,discreteColorScale=FALSE,isAlreadyInUniqueRegionsFormat=TRUE)
+  
+      plot_mri_style_image_human_all_slices(paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted_full/evoHumanHistory_regionwise_peak",transistionsToUseForFunctionalMapPostfix,".png"),evolutionaryAgeUniqueRegionsHumanAtlasWiseTop,length(transistionsToUseForFunctionalMap),mip=FALSE,discreteColorScale=TRUE,isAlreadyInUniqueRegionsFormat=TRUE)
+  
+    plot_mri_style_image_human_all_slices(paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted_full/evoHumanHistory_peak_modeRegion",transistionsToUseForFunctionalMapPostfix,".png"),evolutionaryAgeBiopsyWiseTop,length(transistionsToUseForFunctionalMap),mip=FALSE,discreteColorScale=TRUE,isAlreadyInUniqueRegionsFormat=TRUE)
+   plot_mri_style_image_human_all_slices(paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted_full/evoHumanHistory_peak_modeRegion",transistionsToUseForFunctionalMapPostfix,"_sign.png"),evolutionaryAgeBiopsyWiseTopSign,length(transistionsToUseForFunctionalMap),mip=FALSE,discreteColorScale=TRUE,isAlreadyInUniqueRegionsFormat=TRUE)
+  
+  
+  plot_mri_style_image_human_all_slices(paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted_full/evoHumanHistoryWA_meanRegion",transistionsToUseForFunctionalMapPostfix,".png"),evolutionaryAgeBiopsyWiseWATop,length(transistionsToUseForFunctionalMap),mip=FALSE,discreteColorScale=FALSE,isAlreadyInUniqueRegionsFormat=TRUE)
+
+  getColorScale<-function(amountOfColors){
+    return(colorpanel(amountOfColors,"#00007F","#F4F4F4","#7F0000"))
+  }
+
+  plot_mri_style_image_human(paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/evoHumanHistoryWA_meanRegion_br",transistionsToUseForFunctionalMapPostfix,".png"),evolutionaryAgeBiopsyWiseWATop,length(transistionsToUseForFunctionalMap),mip=FALSE,discreteColorScale=FALSE,isAlreadyInUniqueRegionsFormat=TRUE)
+  
+    plot_mri_style_image_human_all_slices(paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted_full/evoHumanHistoryWA_meanRegion_br",transistionsToUseForFunctionalMapPostfix,".png"),evolutionaryAgeBiopsyWiseWATop,length(transistionsToUseForFunctionalMap),mip=FALSE,discreteColorScale=FALSE,isAlreadyInUniqueRegionsFormat=TRUE)
+  
+
+  getColorScale<-function(amountOfColors){
+    return(colorpanel(amountOfColors,"#ffffb2","#feb24c","#bd0026"))
+  }
+
+  # maxVal<-quantile(humanFunctionalMapsLogPvalueTop[humanFunctionalMapsLogPvalueTop<Inf],0.95,na.rm=TRUE)
+  # for(actTrans in 1:length(transistionsToUseForFunctionalMap)){
+  #    plot_mri_style_image_human(paste0("../storage/",prefix,"evoHistoryHuman_dndsweighted/evoHumanHistory_t",transistionsToUseForFunctionalMap[actTrans],"_mean_of_significant_sites.png"),humanFunctionalMapsLogPvalueTop[actTrans,],maxVal,mip=TRUE)
+  # }
+
+```
+
+```{r Calculate biclustering, include=TRUE}
+#Calculate biclustering
+
+############ RUN UNTIL HERE, THEN COMPUTE BICLUSTERING  ############
+############ YOU SHOULD BETTER RUN THIS ON A MACHINE    ############
+############ WITH >10 CORES SINCE THIS CAN TAKE A WHILE ############
+
+#you don't need to run this, results are included
+#source("GABI_BICLUSTERING.R")
+```
+
+
+```{r Biclustering Summary, results='asis'}
+for(actBiclustering in c("ALL_DNDS_","C_mouse_to_human_","E2_hominids_speciation_with_ancestorsNOG_","C3_mouse_to_human_late_no_gorgo_")){
+  for(lowOrHigh in c("high","low")){
+  
+    if(lowOrHigh=="high"){
+      biclustering_results<-readRDS(paste0("../storage/biclustering_results/",actBiclustering,"ALL_NETWORKS_0_9_0_75.rds"))
+    }else{
+      biclustering_results<-readRDS(paste0("../storage/biclustering_results/",actBiclustering,"ALL_NETWORKS_0_1_0_75.rds"))
+    }
+    if(actBiclustering=="ALL_DNDS_"){
+      time_to_use <- c(1:10,11, 12, 13, 14, 15, 18, 19, 16, 17, 20, 21, 10)
+    
+    #remove unstable clusters
+    if(lowOrHigh=="high"){
+    }else{
+       biclustering_results<-biclustering_results[-c(21)]
+    }
+    }
+    
+    if(actBiclustering=="C_mouse_to_human_"){
+      time_to_use <- c(11, 12, 13, 14, 15, 18, 19, 16, 17, 20, 21, 10)
+    
+      #remove unstable clusters
+      if(lowOrHigh=="high"){
+      }else{
+        biclustering_results<-biclustering_results[-c(21)]
+      }
+    }
+    
+    if(actBiclustering=="E2_hominids_speciation_with_ancestorsNOG_"){
+      time_to_use <- c(18, 15, 7, 19, 16, 17, 20, 21, 8, 9, 10)
+      
+      #remove unstable clusters
+      if(lowOrHigh=="high"){
+         biclustering_results<-biclustering_results[-c(6,10)]
+      }else{
+        biclustering_results<-biclustering_results[-c(21)]
+      }
+    
+    }
+    
+    if(actBiclustering=="C3_mouse_to_human_late_no_gorgo_"){
+    time_to_use <- c(10, 16, 17, 20, 21)
+    
+    #remove unstable clusters
+    if(lowOrHigh=="high"){
+      }else{
+        biclustering_results<-biclustering_results[-c(15)]
+      }
+    }  
+    
+    biclusteringSummary <- c()
+    clusterFeatures <- lapply(biclustering_results, function(x) {
+    dndsCols <- x$features[x$features <= ncol(normalized_dnds_per_gene)]
+    networkCols <- x$features[x$features > ncol(normalized_dnds_per_gene)]
+    c(
+      paste(colnames(normalized_dnds_per_gene)[dndsCols], collapse = " "),
+      paste(colnames(gene_wise_network_correlation)[networkCols - ncol(normalized_dnds_per_gene)], collapse =
+              " "),
+      length(x$samples),
+      paste(apply(as.matrix(normalized_dnds_per_gene[x$samples, dndsCols]), 2, function(x) {
+        round(mean(x, na.rm = TRUE), digits = 3)
+      }), collapse = " "),
+      paste(apply(as.matrix(normalized_dnds_per_gene[x$samples, dndsCols]), 2, function(x) {
+        round(sd(x, na.rm = TRUE), digits = 3)
+      }), collapse = " "),
+      paste(apply(as.matrix(normalized_dnds_per_gene[x$samples, dndsCols]), 2, function(x) {
+        round(quantile(x, na.rm = TRUE, probs = 0.1), digits = 3)
+      }), collapse = " "),
+      paste(apply(as.matrix(normalized_dnds_per_gene[x$samples, dndsCols]), 2, function(x) {
+        round(quantile(x, na.rm = TRUE, probs = 0.9), digits = 3)
+      }), collapse = " "),
+      paste(apply(as.matrix(dnds_per_gene[x$samples, dndsCols]), 2, function(x) {
+        round(mean(x, na.rm = TRUE), digits = 3)
+      }), collapse = " "),
+      paste(apply(as.matrix(dnds_per_gene[x$samples, dndsCols]), 2, function(x) {
+        round(sd(x, na.rm = TRUE), digits = 3)
+      }), collapse = " "),
+      paste(apply(as.matrix(dnds_per_gene[x$samples, dndsCols]), 2, function(x) {
+        round(quantile(x, na.rm = TRUE, probs = 0.1), digits = 3)
+      }), collapse = " "),
+      paste(apply(as.matrix(dnds_per_gene[x$samples, dndsCols]), 2, function(x) {
+        round(quantile(x, na.rm = TRUE, probs = 0.9), digits = 3)
+      }), collapse = " ")
+    )
+    })
+    for (actCluster in 1:length(clusterFeatures)) {
+    biclusteringSummary <- rbind(biclusteringSummary, clusterFeatures[[actCluster]])
+    }
+    colnames(biclusteringSummary) <-
+    c(
+      "DNDS columns",
+      "Network columns",
+      "Amount of Genes",
+      "RAW DNDS",
+      "STD DNDS",
+      "0.1 Quantile DNDS",
+      "0.9 Quantile DNDS",
+      "Mean RAW DNDS",
+      "STD RAW DNDS",
+      "0.1 Quantile RAW DNDS",
+      "0.9 RAW Quantile DNDS"
+    )
+    rownames(biclusteringSummary) <-
+    paste0("Bicluster_", c(1:nrow(biclusteringSummary)))
+    
+    print(kable(biclusteringSummary,caption=gsub("_", " ", paste0(actBiclustering,"_",lowOrHigh))))
+
+  }
+}
+
+```
+
